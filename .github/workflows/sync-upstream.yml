@@ -1,0 +1,72 @@
+name: Sync fork from upstream
+
+# Keeps bit1001/Reloc in sync with Reukix/Reloc every 2 hours.
+# Fast-forward only: if this fork ever gains local commits, the job skips
+# the merge instead of overwriting them (no force-push, no data loss).
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream
+        run: |
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/Reukix/Reloc.git
+          git fetch upstream --prune
+
+      - name: Fast-forward main if possible
+        run: |
+          set -e
+          git checkout main
+          UP=refs/remotes/upstream/main
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$UP")" ]; then
+            echo "Already up to date with upstream ($(git rev-parse --short HEAD))."
+            echo "RESULT=up-to-date" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor HEAD "$UP"; then
+            echo "::warning::Fork has diverged from upstream; skipping sync to protect local commits."
+            echo "  fork HEAD:     $(git rev-parse --short HEAD)"
+            echo "  upstream head: $(git rev-parse --short "$UP")"
+            echo "RESULT=diverged" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          OLD=$(git rev-parse --short HEAD)
+          git merge --ff-only "$UP"
+          git push origin main
+          NEW=$(git rev-parse --short HEAD)
+          echo "Synced main: $OLD -> $NEW"
+          echo "RESULT=updated" >> "$GITHUB_ENV"
+
+      - name: Sync tags
+        if: env.RESULT != 'diverged'
+        run: |
+          set -e
+          # Mirror upstream tags without deleting tags that may exist only in this fork.
+          git fetch upstream --tags --force
+          git push origin --tags
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Upstream sync: ${{ env.RESULT || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream: https://github.com/Reukix/Reloc" >> "$GITHUB_STEP_SUMMARY"
+          echo "Fork: $(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_STEP_SUMMARY"
