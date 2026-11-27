@@ -1,8 +1,9 @@
 name: Sync fork from upstream
 
 # Keeps bit1001/Reloc in sync with Reukix/Reloc every 2 hours.
-# Fast-forward only: if this fork ever gains local commits, the job skips
-# the merge instead of overwriting them (no force-push, no data loss).
+# Uses a merge (not reset/force-push) so this fork's own workflow commit on
+# main is preserved. If a real conflict occurs, the job aborts safely and
+# reports it instead of overwriting either side.
 
 on:
   schedule:
@@ -30,11 +31,13 @@ jobs:
         run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/Reukix/Reloc.git
-          git fetch upstream --prune
+          git fetch upstream --prune --tags
 
-      - name: Fast-forward main if possible
+      - name: Merge upstream into main
         run: |
           set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout main
           UP=refs/remotes/upstream/main
           if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$UP")" ]; then
@@ -42,25 +45,23 @@ jobs:
             echo "RESULT=up-to-date" >> "$GITHUB_ENV"
             exit 0
           fi
-          if ! git merge-base --is-ancestor HEAD "$UP"; then
-            echo "::warning::Fork has diverged from upstream; skipping sync to protect local commits."
-            echo "  fork HEAD:     $(git rev-parse --short HEAD)"
-            echo "  upstream head: $(git rev-parse --short "$UP")"
-            echo "RESULT=diverged" >> "$GITHUB_ENV"
-            exit 0
-          fi
           OLD=$(git rev-parse --short HEAD)
-          git merge --ff-only "$UP"
-          git push origin main
-          NEW=$(git rev-parse --short HEAD)
-          echo "Synced main: $OLD -> $NEW"
-          echo "RESULT=updated" >> "$GITHUB_ENV"
+          if git merge --no-edit "$UP"; then
+            git push origin main
+            NEW=$(git rev-parse --short HEAD)
+            echo "Merged upstream into main: $OLD -> $NEW"
+            echo "RESULT=updated" >> "$GITHUB_ENV"
+          else
+            git merge --abort || true
+            echo "::warning::Merge conflict while syncing upstream; fork left untouched."
+            echo "RESULT=conflict" >> "$GITHUB_ENV"
+          fi
+          exit 0
 
       - name: Sync tags
-        if: env.RESULT != 'diverged'
+        if: env.RESULT != 'conflict'
         run: |
           set -e
-          # Mirror upstream tags without deleting tags that may exist only in this fork.
           git fetch upstream --tags --force
           git push origin --tags
 
@@ -69,4 +70,4 @@ jobs:
         run: |
           echo "### Upstream sync: ${{ env.RESULT || 'unknown' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Upstream: https://github.com/Reukix/Reloc" >> "$GITHUB_STEP_SUMMARY"
-          echo "Fork: $(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Fork HEAD: $(git rev-parse --short HEAD 2>/dev/null)" >> "$GITHUB_STEP_SUMMARY"
