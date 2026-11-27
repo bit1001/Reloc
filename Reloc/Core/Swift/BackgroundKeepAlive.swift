@@ -3,7 +3,7 @@ import CoreLocation
 import Foundation
 import UIKit
 
-/// Keeps Reloc genuinely alive in the background while injecting coordinates over 10.7.0.1
+/// Keeps Reloc genuinely alive in the background while streaming coordinates through the local accessory endpoint
 /// AND keeps `locationd` continuously subscribed (0xFFFA) to the external accessory GPS.
 @MainActor
 public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
@@ -20,6 +20,7 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private var observersInstalled = false
     private var hasRequestedAlwaysUpgrade = false
     private var lastAuthStatus: CLAuthorizationStatus?
+    private var lastRefreshToggleAt: CFAbsoluteTime = 0
     public var onDiagnostic: ((String, [String: Any]) -> Void)?
 
     private static let keepAliveWAVData: Data = makeInaudibleKeepAliveWAV(durationSeconds: 4, sampleRate: 8000)
@@ -176,8 +177,17 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     /// because turning Location Services off invalidates the previous CLBackgroundActivitySession.
     public func refreshAfterLocationToggle() {
         guard isActive else { return }
+        let status = locationManager.authorizationStatus
+        // Ignore early 0xFFFA callbacks while CoreLocation still reports denied/restricted;
+        // restarting CLBackgroundActivitySession before authorization recovers causes a 0xFFFC/0xFFFA bounce loop.
+        guard status == .authorizedAlways || status == .authorizedWhenInUse else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastRefreshToggleAt >= 1.5 else { return }
+        lastRefreshToggleAt = now
         renewBackgroundTask()
-        startBackgroundLocation(forceRestart: true)
+        (backgroundActivitySession as? CLBackgroundActivitySession)?.invalidate()
+        backgroundActivitySession = CLBackgroundActivitySession()
+        startBackgroundLocation(forceRestart: false)
         if wantSilentAudio {
             startResilientAudioKeepAlive()
         }
@@ -264,7 +274,7 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private func stopAudioKeepAlive(deactivateSession: Bool = true) {
         audioPlayer?.stop()
         audioPlayer = nil
-        if deactivateSession && !PairingPiPPresenter.shared.isActive {
+        if deactivateSession && !LocationRefreshPresenter.shared.isActive {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
@@ -328,6 +338,12 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleAudioRouteChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
@@ -357,6 +373,14 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         guard isActive, wantSilentAudio else { return }
         audioPlayer = nil
         startResilientAudioKeepAlive()
+    }
+
+    @objc private func handleAudioRouteChange(_ notification: Notification) {
+        guard isActive, wantSilentAudio else { return }
+        if !(audioPlayer?.isPlaying ?? false) {
+            startResilientAudioKeepAlive()
+            emitStatus("audio_route_resumed")
+        }
     }
 
     @objc private func handleDidEnterBackground() {
@@ -396,6 +420,15 @@ public final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
             } else if self.locationSubscriptionActive {
                 self.startBackgroundLocation()
             }
+        }
+    }
+
+    public nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            guard self.isActive, self.locationSubscriptionActive else { return }
+            self.isLocationUpdating = false
+            self.startBackgroundLocation()
+            self.emitStatus("keepalive_location_resumed_after_pause")
         }
     }
 

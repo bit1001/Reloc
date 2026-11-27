@@ -1,5 +1,4 @@
 import Foundation
-import RelocDeviceBridge
 
 public struct ProtocolEvent: Identifiable, Sendable {
     public let id = UUID()
@@ -19,7 +18,6 @@ public struct ProtocolEvent: Identifiable, Sendable {
 public struct SessionSnapshot: Equatable, Sendable {
     public var isRunning: Bool = false
     public var mode: SessionMode = .send
-    public var lockdownConnected: Bool = false
     public var linkReady: Bool = false
     public var identified: Bool = false
     public var authenticated: Bool = false
@@ -36,46 +34,19 @@ public enum SessionMode: String, Sendable {
 }
 
 public struct SessionConfiguration: Sendable {
-    public var host: String
-    public var remotePort: UInt16
-    public var lockdownPort: UInt16
-    public var serviceName: String
     public var mode: SessionMode
     public var intervalSeconds: TimeInterval
     /// 0 means run continuously until stopped manually.
     public var durationSeconds: TimeInterval
 
     public init(
-        host: String = "10.7.0.1",
-        remotePort: UInt16 = 49152,
-        lockdownPort: UInt16 = 62078,
-        serviceName: String = "com.apple.carkit.service",
         mode: SessionMode = .send,
         intervalSeconds: TimeInterval = 1.0,
         durationSeconds: TimeInterval = 0
     ) {
-        self.host = host
-        self.remotePort = remotePort
-        self.lockdownPort = lockdownPort
-        self.serviceName = serviceName
         self.mode = mode
         self.intervalSeconds = max(1.0, intervalSeconds)
         self.durationSeconds = max(0, durationSeconds)
-    }
-}
-
-public struct ConnectionCheckResult: Sendable {
-    public let udid: String
-    public let port: UInt16
-    public let carkitService: String?
-}
-
-public enum ConnectionCheckError: LocalizedError {
-    case message(String)
-    public var errorDescription: String? {
-        switch self {
-        case .message(let text): return text
-        }
     }
 }
 
@@ -101,10 +72,7 @@ public final class LiveLocationBox: @unchecked Sendable {
     }
 }
 
-/// Manages an iAP2 accessory-location session over either:
-/// 1) Remote Pairing + RSD tunnel on 10.7.0.1:<discoveredPort> (iOS 17–27, Retools-style), OR
-/// 2) Traditional Lockdown pairing on 10.7.0.1:62078, OR
-/// 3) An injected RLTLSSocket (for unit tests).
+/// Runs iAP2 / MFi / NMEA through a software-only local accessory endpoint.
 public final class AccessoryLocationSession {
     public typealias EventCallback = @Sendable (ProtocolEvent) -> Void
     public typealias SnapshotCallback = @Sendable (SessionSnapshot) -> Void
@@ -114,10 +82,9 @@ public final class AccessoryLocationSession {
     private let stateLock = NSLock()
     private var cancelled = false
     private var runGeneration: UInt64 = 0
-    private var activeLockdown: RLLockdownClient?
-    private var activeTunnelHandle: UInt64 = 0
     private var activeLink: IAP2Link?
-    private var activeSocket: RLTLSSocket?
+    private var activeSocket: RLStreamSocket?
+    private var activeVirtualTransport: RLVirtualAccessoryTransport?
     private var coreLocationConfirmed = false
     private var fastBurstUntil: CFAbsoluteTime = 0
     private var pendingKalmanReset = false
@@ -132,7 +99,6 @@ public final class AccessoryLocationSession {
     private let onLocationRequested: (@Sendable () -> Void)?
     private let onLocationStopped: (@Sendable () -> Void)?
     private let onSubscriptionRestarted: (@Sendable () -> Void)?
-    private let onDiscoveredPort: (@Sendable (UInt16) -> Void)?
 
     public init(
         id: UUID = UUID(),
@@ -142,8 +108,7 @@ public final class AccessoryLocationSession {
         onAuthenticated: (@Sendable () -> Void)? = nil,
         onLocationRequested: (@Sendable () -> Void)? = nil,
         onLocationStopped: (@Sendable () -> Void)? = nil,
-        onSubscriptionRestarted: (@Sendable () -> Void)? = nil,
-        onDiscoveredPort: (@Sendable (UInt16) -> Void)? = nil
+        onSubscriptionRestarted: (@Sendable () -> Void)? = nil
     ) {
         self.id = id
         self.locationBox = LiveLocationBox(initialLocation)
@@ -153,7 +118,6 @@ public final class AccessoryLocationSession {
         self.onLocationRequested = onLocationRequested
         self.onLocationStopped = onLocationStopped
         self.onSubscriptionRestarted = onSubscriptionRestarted
-        self.onDiscoveredPort = onDiscoveredPort
     }
 
     /// Updates whether iOS CoreLocation has confirmed `isProducedByAccessory == true` for the target.
@@ -219,119 +183,111 @@ public final class AccessoryLocationSession {
         return !confirmed && now < burstDeadline
     }
 
-    /// Verifies device loopback connectivity and reads device identity (modeled on Reukix/retools).
-    public static func verifyConnection(
-        host: String,
-        remotePort: UInt16,
-        lockdownPort: UInt16,
-        pairing: SavedPairing
-    ) async throws -> ConnectionCheckResult {
-        switch pairing {
-        case .remotePairing(let data, _):
-            let discovered = await RemotePairingDiscovery.discoverPort(record: data)
-            let port = discovered ?? remotePort
-            return try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let ptr = data.withUnsafeBytes { bytes in
-                        host.withCString { ip in
-                            rl_device_pairing_verify(
-                                bytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                                bytes.count,
-                                ip,
-                                port
-                            )
-                        }
-                    }
-                    guard let ptr else {
-                        continuation.resume(throwing: ConnectionCheckError.message("设备连接验证无返回结果"))
-                        return
-                    }
-                    defer { rl_string_free(ptr) }
-                    let jsonText = String(cString: ptr)
-                    let obj = (try? JSONSerialization.jsonObject(with: Data(jsonText.utf8))) as? [String: Any] ?? [:]
-                    if obj["ok"] as? Bool == true {
-                        let udid = obj["udid"] as? String ?? ""
-                        let carkit = obj["carkit_service"] as? String
-                        continuation.resume(returning: ConnectionCheckResult(udid: udid, port: port, carkitService: carkit))
-                    } else {
-                        let err = obj["error"] as? String ?? "设备连接验证失败"
-                        continuation.resume(throwing: ConnectionCheckError.message(err))
-                    }
-                }
-            }
-
-        case .lockdown(let record):
-            return try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        let client = try RLLockdownClient(
-                            connectedToHost: host,
-                            port: lockdownPort,
-                            pairingRecord: record,
-                            timeout: 10.0,
-                            logHandler: nil
-                        )
-                        let udid = record.udid ?? record.hostID
-                        client.close()
-                        continuation.resume(returning: ConnectionCheckResult(udid: udid, port: lockdownPort, carkitService: "com.apple.carkit.service"))
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
+    /// Verifies a local virtual endpoint through a real iAP2 SYN exchange, without pairing.
+    public static func verifyConnection() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let transport = try RLVirtualAccessoryTransport(eventHandler: nil)
+                    defer { transport.close() }
+                    let link = IAP2Link(socket: transport.socket)
+                    try link.handshake()
+                    link.sendReset()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
         }
     }
 
-    /// Starts a session using the saved pairing (Remote Pairing or Lockdown).
-    public func start(
-        configuration: SessionConfiguration,
-        pairing: SavedPairing,
-        discoveredRemotePort: UInt16? = nil,
-        mfiSigner: RLMFiSigner
-    ) {
+    /// Uses the same MFi / NMEA session and refresh workflow over a software-only endpoint.
+    public func start(configuration: SessionConfiguration, mfiSigner: RLMFiSigner) {
         resetCancellation()
-        switch pairing {
-        case .remotePairing(let data, _):
-            Task { [weak self] in
-                guard let self else { return }
-                let port: UInt16
-                let usedCachedPort: Bool
-                if let discoveredRemotePort {
-                    port = discoveredRemotePort
-                    usedCachedPort = true
-                } else if let discovered = await RemotePairingDiscovery.discoverPort(record: data) {
-                    port = discovered
-                    usedCachedPort = false
-                    self.onDiscoveredPort?(discovered)
-                } else {
-                    port = configuration.remotePort
-                    usedCachedPort = false
-                }
-                self.queue.async {
-                    self.runOverRemotePairing(
-                        configuration: configuration,
-                        recordData: data,
-                        port: port,
-                        usedCachedPort: usedCachedPort,
-                        mfiSigner: mfiSigner
+        queue.async { [weak self] in
+            guard let self else { return }
+            let deadline = configuration.durationSeconds > 0
+                ? CFAbsoluteTimeGetCurrent() + configuration.durationSeconds : nil
+            var finalSnapshot = SessionSnapshot()
+            finalSnapshot.mode = configuration.mode
+            finalSnapshot.isRunning = true
+            self.onSnapshot(finalSnapshot)
+            var shouldReconnect = true
+            var consecutiveFailures = 0
+            while shouldReconnect && !self.isCancelled() {
+                if let deadline, CFAbsoluteTimeGetCurrent() >= deadline { break }
+                var reconnectDelay: TimeInterval = 0.5
+                do {
+                    let transport = try RLVirtualAccessoryTransport { [weak self] event, details in
+                        self?.emitEvent(event, details: details)
+                    }
+                    self.stateLock.lock()
+                    self.activeVirtualTransport = transport
+                    let cancelled = self.cancelled
+                    self.stateLock.unlock()
+                    defer {
+                        transport.close()
+                        self.stateLock.lock()
+                        self.activeVirtualTransport = nil
+                        self.stateLock.unlock()
+                    }
+                    if cancelled { break }
+                    let outcome = self.runOnSocket(
+                        socket: transport.socket, configuration: configuration, mfiSigner: mfiSigner,
+                        initialSnapshot: finalSnapshot, overallDeadline: deadline, keepRunningOnExit: true
                     )
+                    switch outcome {
+                    case .completed(let count):
+                        finalSnapshot.packetsAcknowledged = count
+                        shouldReconnect = false
+                    case .fatalError(let message):
+                        finalSnapshot.lastError = message
+                        shouldReconnect = false
+                    case .reconnectRequested(let reason, let count):
+                        finalSnapshot.packetsAcknowledged = count
+                        consecutiveFailures = 0
+                        reconnectDelay = 0.5
+                        self.emitEvent("virtual_accessory_reconnecting", details: ["reason": reason])
+                    case .recoverableError(let message, let didSendPackets, let count):
+                        finalSnapshot.packetsAcknowledged = count
+                        if didSendPackets {
+                            consecutiveFailures = 0
+                            reconnectDelay = 0.5
+                        } else {
+                            consecutiveFailures += 1
+                            reconnectDelay = min(5.0, 0.5 * pow(2.0, Double(min(consecutiveFailures - 1, 3))))
+                        }
+                        self.emitEvent("virtual_accessory_reconnecting", details: [
+                            "reason": message,
+                            "backoff_s": reconnectDelay,
+                        ])
+                    }
+                } catch {
+                    let message = error.localizedDescription
+                    let nsError = error as NSError
+                    let isPermanent = nsError.domain == "dev.reloc.virtual-accessory" && nsError.code == 2
+                    consecutiveFailures += 1
+                    self.emitEvent("virtual_accessory_error", details: [
+                        "detail": message,
+                        "attempt": consecutiveFailures,
+                    ], isError: true)
+                    if isPermanent || consecutiveFailures >= 6 {
+                        finalSnapshot.lastError = message
+                        shouldReconnect = false
+                    } else {
+                        reconnectDelay = min(4.0, 0.5 * pow(2.0, Double(consecutiveFailures - 1)))
+                    }
                 }
+                if shouldReconnect { self.sleepCancellable(reconnectDelay, deadline: deadline) }
             }
-
-        case .lockdown(let record):
-            queue.async { [weak self] in
-                self?.runOverLockdown(
-                    configuration: configuration,
-                    pairingRecord: record,
-                    mfiSigner: mfiSigner
-                )
-            }
+            finalSnapshot.isRunning = false
+            self.onSnapshot(finalSnapshot)
         }
     }
 
     /// Starts directly over an already-connected socket (used for loopback unit testing).
     public func start(
-        socket: RLTLSSocket,
+        socket: RLStreamSocket,
         configuration: SessionConfiguration,
         mfiSigner: RLMFiSigner,
         completion: (() -> Void)? = nil
@@ -339,7 +295,7 @@ public final class AccessoryLocationSession {
         resetCancellation()
         queue.async { [weak self] in
             defer { completion?() }
-            self?.runOnSocket(
+            _ = self?.runOnSocket(
                 socket: socket,
                 configuration: configuration,
                 mfiSigner: mfiSigner,
@@ -379,16 +335,11 @@ public final class AccessoryLocationSession {
     private func forceCloseActiveTransports() {
         stateLock.lock()
         let link = activeLink
-        let lockdown = activeLockdown
-        let tunnelHandle = activeTunnelHandle
-        activeTunnelHandle = 0
+        let virtualTransport = activeVirtualTransport
         stateLock.unlock()
 
         link?.close()
-        lockdown?.cancel()
-        if tunnelHandle != 0 {
-            rl_rppairing_close_service(tunnelHandle)
-        }
+        virtualTransport?.close()
     }
 
     private func resetCancellation() {
@@ -438,406 +389,8 @@ public final class AccessoryLocationSession {
         }
     }
 
-    private func discoverRemotePortSync(recordData: Data) -> UInt16? {
-        let sem = DispatchSemaphore(value: 0)
-        final class PortBox: @unchecked Sendable { var value: UInt16? }
-        let box = PortBox()
-        Task { @MainActor in
-            box.value = await RemotePairingDiscovery.discoverPort(record: recordData)
-            sem.signal()
-        }
-        let end = CFAbsoluteTimeGetCurrent() + 6.0
-        while !isCancelled() && CFAbsoluteTimeGetCurrent() < end {
-            if sem.wait(timeout: .now() + 0.15) == .success {
-                return box.value
-            }
-        }
-        return nil
-    }
-
-    private static func isFatalPairingError(_ message: String) -> Bool {
-        message.contains("配对记录校验未通过")
-            || message.contains("公私钥不匹配")
-            || message.contains("配对身份格式无效")
-            || message.contains("配对数据为空")
-    }
-
-    private func runOverRemotePairing(
-        configuration: SessionConfiguration,
-        recordData: Data,
-        port initialPort: UInt16,
-        usedCachedPort: Bool,
-        mfiSigner: RLMFiSigner
-    ) {
-        let overallDeadline: CFAbsoluteTime? = configuration.durationSeconds > 0
-            ? CFAbsoluteTimeGetCurrent() + configuration.durationSeconds
-            : nil
-
-        var snapshot = SessionSnapshot()
-        snapshot.isRunning = true
-        snapshot.mode = configuration.mode
-        onSnapshot(snapshot)
-
-        var currentPort = initialPort
-        var cachedPortPendingRefresh = usedCachedPort
-        var reconnectAttempt = 0
-        var cumulativePackets = 0
-
-        while !isCancelled() {
-            if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                break
-            }
-
-            if reconnectAttempt > 0 {
-                if let freshPort = discoverRemotePortSync(recordData: recordData) {
-                    currentPort = freshPort
-                    cachedPortPendingRefresh = false
-                    onDiscoveredPort?(freshPort)
-                }
-                if isCancelled() { break }
-            }
-
-            emitEvent("rppairing_connecting", details: [
-                "host": configuration.host,
-                "port": Int(currentPort),
-                "attempt": reconnectAttempt + 1,
-            ])
-
-            let ptr = recordData.withUnsafeBytes { bytes in
-                configuration.host.withCString { ip in
-                    configuration.serviceName.withCString { svc in
-                        rl_rppairing_open_service(
-                            bytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                            bytes.count,
-                            ip,
-                            currentPort,
-                            svc
-                        )
-                    }
-                }
-            }
-
-            guard let ptr else {
-                let err = "无法通过 Remote Pairing 建立设备服务通道"
-                if configuration.mode != .send || isCancelled() {
-                    if !isCancelled() {
-                        snapshot.lastError = err
-                        emitEvent("error", details: ["detail": err], isError: true)
-                    }
-                    break
-                }
-                reconnectAttempt += 1
-                let delay = min(5.0, pow(1.5, Double(reconnectAttempt - 1)))
-                snapshot.lockdownConnected = false
-                snapshot.linkReady = false
-                snapshot.identified = false
-                snapshot.authenticated = false
-                snapshot.activeSentences = []
-                snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "通道建立失败，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
-                onSnapshot(snapshot)
-                emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
-                sleepCancellable(delay, deadline: overallDeadline)
-                continue
-            }
-
-            let jsonText = String(cString: ptr)
-            rl_string_free(ptr)
-
-            let obj = (try? JSONSerialization.jsonObject(with: Data(jsonText.utf8))) as? [String: Any] ?? [:]
-            guard obj["ok"] as? Bool == true,
-                  let fdNum = obj["fd"] as? Int,
-                  let handleNum = obj["handle"] as? UInt64 else {
-                let err = obj["error"] as? String ?? "打开 Remote Pairing 服务失败"
-                if configuration.mode != .send || isCancelled() || Self.isFatalPairingError(err) {
-                    if !isCancelled() {
-                        snapshot.lastError = err
-                        emitEvent("error", details: ["detail": err], isError: true)
-                    }
-                    break
-                }
-                reconnectAttempt += 1
-                let delay = cachedPortPendingRefresh ? 0.25 : min(5.0, pow(1.5, Double(reconnectAttempt - 1)))
-                cachedPortPendingRefresh = false
-                snapshot.lockdownConnected = false
-                snapshot.linkReady = false
-                snapshot.identified = false
-                snapshot.authenticated = false
-                snapshot.activeSentences = []
-                snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "隧道中断，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
-                onSnapshot(snapshot)
-                emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
-                sleepCancellable(delay, deadline: overallDeadline)
-                continue
-            }
-
-            cachedPortPendingRefresh = false
-
-            let usedService = obj["service"] as? String ?? configuration.serviceName
-            let usedPort = obj["port"] as? Int ?? 0
-
-            stateLock.lock()
-            activeTunnelHandle = handleNum
-            stateLock.unlock()
-
-            func closeCurrentTunnel() {
-                stateLock.lock()
-                let h = activeTunnelHandle
-                activeTunnelHandle = 0
-                stateLock.unlock()
-                if h != 0 {
-                    rl_rppairing_close_service(h)
-                }
-            }
-
-            if isCancelled() {
-                Darwin.close(Int32(fdNum))
-                closeCurrentTunnel()
-                break
-            }
-
-            emitEvent("rppairing_service_connected", details: [
-                "service": usedService,
-                "service_port": usedPort,
-                "rp_port": Int(currentPort),
-            ])
-
-            let serviceSocket = RLTLSSocket(fileDescriptor: Int32(fdNum))
-            var attemptSnapshot = SessionSnapshot()
-            attemptSnapshot.isRunning = true
-            attemptSnapshot.mode = configuration.mode
-            attemptSnapshot.lockdownConnected = true
-            attemptSnapshot.packetsAcknowledged = cumulativePackets
-            onSnapshot(attemptSnapshot)
-
-            let outcome = runOnSocket(
-                socket: serviceSocket,
-                configuration: configuration,
-                mfiSigner: mfiSigner,
-                initialSnapshot: attemptSnapshot,
-                overallDeadline: overallDeadline,
-                keepRunningOnExit: configuration.mode == .send
-            )
-            closeCurrentTunnel()
-
-            switch outcome {
-            case .completed(let packetCount):
-                cumulativePackets = packetCount
-                snapshot = attemptSnapshot
-                snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.isRunning = false
-                onSnapshot(snapshot)
-                return
-
-            case .fatalError(let err):
-                snapshot.lastError = err
-                snapshot.isRunning = false
-                onSnapshot(snapshot)
-                return
-
-            case .reconnectRequested(let reason, let packetCount):
-                cumulativePackets = packetCount
-                if isCancelled() { break }
-                if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                    break
-                }
-                reconnectAttempt = 0
-                snapshot = SessionSnapshot()
-                snapshot.isRunning = true
-                snapshot.mode = configuration.mode
-                snapshot.packetsAcknowledged = cumulativePackets
-                onSnapshot(snapshot)
-                emitEvent("reconnecting", details: ["attempt": 1, "delay_s": 0.35, "reason": reason])
-                sleepCancellable(0.35, deadline: overallDeadline)
-
-            case .recoverableError(let err, let didSend, let packetCount):
-                cumulativePackets = packetCount
-                if configuration.mode != .send || isCancelled() {
-                    snapshot.lastError = isCancelled() ? nil : err
-                    break
-                }
-                if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                    break
-                }
-                if didSend {
-                    reconnectAttempt = 0
-                }
-                reconnectAttempt += 1
-                let delay = min(5.0, pow(1.5, Double(reconnectAttempt - 1)))
-                snapshot = SessionSnapshot()
-                snapshot.isRunning = true
-                snapshot.mode = configuration.mode
-                snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "连接断开，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
-                onSnapshot(snapshot)
-                emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
-                sleepCancellable(delay, deadline: overallDeadline)
-            }
-        }
-
-        snapshot.packetsAcknowledged = cumulativePackets
-        snapshot.isRunning = false
-        onSnapshot(snapshot)
-    }
-
-    private func runOverLockdown(
-        configuration: SessionConfiguration,
-        pairingRecord: RLPairingRecord,
-        mfiSigner: RLMFiSigner
-    ) {
-        let overallDeadline: CFAbsoluteTime? = configuration.durationSeconds > 0
-            ? CFAbsoluteTimeGetCurrent() + configuration.durationSeconds
-            : nil
-
-        var snapshot = SessionSnapshot()
-        snapshot.isRunning = true
-        snapshot.mode = configuration.mode
-        onSnapshot(snapshot)
-
-        var reconnectAttempt = 0
-        var cumulativePackets = 0
-
-        while !isCancelled() {
-            if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                break
-            }
-
-            var lockdown: RLLockdownClient?
-            func closeLockdown() {
-                lockdown?.close()
-                lockdown = nil
-                stateLock.lock()
-                activeLockdown = nil
-                stateLock.unlock()
-            }
-
-            do {
-                let client = try RLLockdownClient(
-                    connectedToHost: configuration.host,
-                    port: configuration.lockdownPort,
-                    pairingRecord: pairingRecord,
-                    timeout: 10.0,
-                    logHandler: { [weak self] event, details in
-                        self?.emitEvent(event, details: details)
-                    }
-                )
-                lockdown = client
-                stateLock.lock()
-                activeLockdown = client
-                stateLock.unlock()
-
-                if isCancelled() {
-                    closeLockdown()
-                    break
-                }
-
-                let serviceSocket = try client.startService(configuration.serviceName, timeout: 10.0)
-                var attemptSnapshot = SessionSnapshot()
-                attemptSnapshot.isRunning = true
-                attemptSnapshot.mode = configuration.mode
-                attemptSnapshot.lockdownConnected = true
-                attemptSnapshot.packetsAcknowledged = cumulativePackets
-                onSnapshot(attemptSnapshot)
-
-                let outcome = runOnSocket(
-                    socket: serviceSocket,
-                    configuration: configuration,
-                    mfiSigner: mfiSigner,
-                    initialSnapshot: attemptSnapshot,
-                    overallDeadline: overallDeadline,
-                    keepRunningOnExit: configuration.mode == .send
-                )
-                closeLockdown()
-
-                switch outcome {
-                case .completed(let packetCount):
-                    cumulativePackets = packetCount
-                    snapshot.packetsAcknowledged = cumulativePackets
-                    snapshot.isRunning = false
-                    onSnapshot(snapshot)
-                    return
-
-                case .fatalError(let err):
-                    snapshot.lastError = err
-                    snapshot.isRunning = false
-                    onSnapshot(snapshot)
-                    return
-
-                case .reconnectRequested(let reason, let packetCount):
-                    cumulativePackets = packetCount
-                    if isCancelled() { break }
-                    if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                        break
-                    }
-                    reconnectAttempt = 0
-                    snapshot = SessionSnapshot()
-                    snapshot.isRunning = true
-                    snapshot.mode = configuration.mode
-                    snapshot.packetsAcknowledged = cumulativePackets
-                    onSnapshot(snapshot)
-                    emitEvent("reconnecting", details: ["attempt": 1, "delay_s": 0.35, "reason": reason])
-                    sleepCancellable(0.35, deadline: overallDeadline)
-                    continue
-
-                case .recoverableError(let err, let didSend, let packetCount):
-                    cumulativePackets = packetCount
-                    if configuration.mode != .send || isCancelled() {
-                        snapshot.lastError = isCancelled() ? nil : err
-                        break
-                    }
-                    if let overallDeadline, CFAbsoluteTimeGetCurrent() >= overallDeadline {
-                        break
-                    }
-                    if didSend {
-                        reconnectAttempt = 0
-                    }
-                    reconnectAttempt += 1
-                    let delay = min(5.0, pow(1.5, Double(reconnectAttempt - 1)))
-                    snapshot = SessionSnapshot()
-                    snapshot.isRunning = true
-                    snapshot.mode = configuration.mode
-                    snapshot.packetsAcknowledged = cumulativePackets
-                    snapshot.lastError = "连接断开，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
-                    onSnapshot(snapshot)
-                    emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": err], isError: true)
-                    sleepCancellable(delay, deadline: overallDeadline)
-                    continue
-                }
-                break
-            } catch {
-                closeLockdown()
-                if isCancelled() {
-                    emitEvent("stopped", details: ["reason": "user_cancelled"])
-                    break
-                }
-                let message = error.localizedDescription
-                if configuration.mode != .send {
-                    snapshot.lastError = message
-                    emitEvent("error", details: ["detail": message], isError: true)
-                    break
-                }
-                reconnectAttempt += 1
-                let delay = min(5.0, pow(1.5, Double(reconnectAttempt - 1)))
-                snapshot = SessionSnapshot()
-                snapshot.isRunning = true
-                snapshot.mode = configuration.mode
-                snapshot.packetsAcknowledged = cumulativePackets
-                snapshot.lastError = "Lockdown 中断，\(String(format: "%.1f", delay)) 秒后自动重连（第 \(reconnectAttempt) 次）"
-                onSnapshot(snapshot)
-                emitEvent("reconnecting", details: ["attempt": reconnectAttempt, "delay_s": delay, "reason": message], isError: true)
-                sleepCancellable(delay, deadline: overallDeadline)
-            }
-        }
-
-        snapshot.packetsAcknowledged = cumulativePackets
-        snapshot.isRunning = false
-        onSnapshot(snapshot)
-    }
-
-    @discardableResult
     private func runOnSocket(
-        socket: RLTLSSocket,
+        socket: RLStreamSocket,
         configuration: SessionConfiguration,
         mfiSigner: RLMFiSigner,
         initialSnapshot: SessionSnapshot,
@@ -850,7 +403,10 @@ public final class AccessoryLocationSession {
         let initialPacketCount = snapshot.packetsAcknowledged
         onSnapshot(snapshot)
 
-        let link = IAP2Link(socket: socket) { [weak self] event, details in
+        let link = IAP2Link(
+            socket: socket,
+            shouldCancel: { [weak self] in self?.isCancelled() ?? true }
+        ) { [weak self] event, details in
             self?.emitEvent(event, details: details)
         }
 
@@ -873,6 +429,7 @@ public final class AccessoryLocationSession {
             onSnapshot(snapshot)
 
             let startTime = CFAbsoluteTimeGetCurrent()
+            let authDeadline = startTime + 12.0
             let deadline: CFAbsoluteTime? = overallDeadline ?? (
                 configuration.durationSeconds > 0
                     ? startTime + configuration.durationSeconds
@@ -904,6 +461,9 @@ public final class AccessoryLocationSession {
                 let now = CFAbsoluteTimeGetCurrent()
                 if let deadline, now >= deadline {
                     break
+                }
+                if !snapshot.authenticated && now >= authDeadline {
+                    throw IAP2LinkError.timeout("Accessory identification/authentication timed out")
                 }
 
                 var pollSlice: TimeInterval = 0.15
@@ -1074,6 +634,7 @@ public final class AccessoryLocationSession {
                                 "count": snapshot.packetsAcknowledged,
                                 "lat": String(format: "%.6f", target.latitude),
                                 "lon": String(format: "%.6f", target.longitude),
+                                "alt": String(format: "%.1f", target.altitude),
                             ])
                         }
                     }

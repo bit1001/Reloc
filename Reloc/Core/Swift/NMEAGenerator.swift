@@ -103,7 +103,8 @@ public enum NMEAGenerator {
         let safeQuality = max(0, min(8, fixQuality))
         let safeHDOP = hdop.isFinite ? max(0.1, hdop) : 0.5
         let hdopStr = String(format: "%.1f", safeHDOP)
-        let altitudeStr = String(format: "%.1f", location.altitude.isFinite ? location.altitude : 10.0)
+        let safeAltitude = location.altitude.isFinite ? min(50_000.0, max(-500.0, location.altitude)) : 10.0
+        let altitudeStr = String(format: "%.1f", safeAltitude)
         let speedStr = String(format: "%.1f", max(0.0, location.speedKnots.isFinite ? location.speedKnots : 0.0))
         let courseNorm = location.courseDegrees.isFinite
             ? ((location.courseDegrees.truncatingRemainder(dividingBy: 360.0)) + 360.0)
@@ -226,7 +227,7 @@ public enum CoordinateTransform {
         return CLLocationCoordinate2D(latitude: wgsLat, longitude: wgsLon)
     }
 
-    /// Applies optional sub-meter GPS micro-jitter so stationary fixes feel more lifelike.
+    /// Applies optional sub-meter GPS micro-jitter (horizontal + subtle vertical) so stationary fixes feel more lifelike.
     public static func applyMicroJitter(to location: TargetLocation, radiusMeters: Double = 0.6) -> TargetLocation {
         guard radiusMeters > 0 else { return location }
         let angle = Double.random(in: 0..<(2.0 * .pi))
@@ -234,9 +235,12 @@ public enum CoordinateTransform {
         let dLat = (radius * cos(angle)) / 111_320.0
         let cosLat = max(0.01, cos(location.latitude * .pi / 180.0))
         let dLon = (radius * sin(angle)) / (111_320.0 * cosLat)
+        let baseAlt = location.altitude.isFinite ? location.altitude : 10.0
+        let dAlt = Double.random(in: -0.3...0.3)
         var copy = location
         copy.latitude = min(90.0, max(-90.0, location.latitude + dLat))
         copy.longitude = min(180.0, max(-180.0, location.longitude + dLon))
+        copy.altitude = min(50_000.0, max(-500.0, baseAlt + dAlt))
         return copy
     }
 

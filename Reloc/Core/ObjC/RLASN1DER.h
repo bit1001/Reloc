@@ -10,14 +10,9 @@ typedef NS_ERROR_ENUM(RLErrorDomain, RLErrorCode) {
     RLErrorInvalidIdentity = 1003,
     RLErrorInvalidChallenge = 1004,
     RLErrorSigningFailed = 1005,
-    RLErrorPairingInvalid = 1006,
-    RLErrorSocketConnect = 2001,
     RLErrorSocketIO = 2002,
     RLErrorSocketTimeout = 2003,
     RLErrorSocketClosed = 2004,
-    RLErrorTLSHandshake = 2005,
-    RLErrorLockdownProtocol = 3001,
-    RLErrorLockdownRejected = 3002,
     RLErrorIAP2Protocol = 4001,
 };
 

@@ -14,10 +14,11 @@ public enum IAP2LinkError: LocalizedError {
     }
 }
 
-/// Stop-and-wait iAP2 link implementation over RLTLSSocket (faithful port of link.py).
+/// Stop-and-wait iAP2 link implementation over RLStreamSocket (faithful port of link.py).
 public final class IAP2Link {
-    private let socket: RLTLSSocket
+    private let socket: RLStreamSocket
     private let emit: (String, [String: Any]) -> Void
+    private let shouldCancel: () -> Bool
 
     private var sequence: UInt8
     private var peerSequence: UInt8 = 0
@@ -29,8 +30,13 @@ public final class IAP2Link {
     private let assembler = RLIAP2MessageBuffer()
     private var pendingHeader: Data?
 
-    public init(socket: RLTLSSocket, emit: @escaping (String, [String: Any]) -> Void = { _, _ in }) {
+    public init(
+        socket: RLStreamSocket,
+        shouldCancel: @escaping () -> Bool = { false },
+        emit: @escaping (String, [String: Any]) -> Void = { _, _ in }
+    ) {
         self.socket = socket
+        self.shouldCancel = shouldCancel
         self.emit = emit
         self.sequence = UInt8.random(in: 0...255)
     }
@@ -39,7 +45,7 @@ public final class IAP2Link {
         socket.close()
     }
 
-    /// Sends an iAP2 Link Reset (`RST`) control packet so iOS `iap2d` / `com.apple.carkit.service`
+    /// Sends an iAP2 Link Reset (`RST`) control packet so the local CoreAccessories endpoint
     /// detaches the external GPS accessory immediately instead of waiting for TCP keepalive timeout.
     public func sendReset() {
         let rst = RLIAP2Packet(
@@ -135,12 +141,29 @@ public final class IAP2Link {
         let synAckMask = RLIAP2LinkFlags.SYN.rawValue | RLIAP2LinkFlags.ACK.rawValue
 
         for _ in 0..<3 {
-            try writePacket(syn)
-            guard let response = try readPacket(timeout: 2.0) else {
-                continue
+            if shouldCancel() {
+                throw IAP2LinkError.timeout("iAP2 handshake cancelled")
             }
-            if (response.flags & synAckMask) != synAckMask {
-                throw IAP2LinkError.protocolError("Expected SYN+ACK during iAP2 handshake")
+            try writePacket(syn)
+            let attemptDeadline = CFAbsoluteTimeGetCurrent() + 2.0
+            var response: RLIAP2Packet?
+            while !shouldCancel() {
+                let remaining = attemptDeadline - CFAbsoluteTimeGetCurrent()
+                if remaining <= 0 { break }
+                guard let candidate = try readPacket(timeout: remaining) else {
+                    if CFAbsoluteTimeGetCurrent() >= attemptDeadline { break }
+                    continue
+                }
+                if (candidate.flags & RLIAP2LinkFlags.RST.rawValue) != 0 {
+                    throw IAP2LinkError.linkReset
+                }
+                if (candidate.flags & synAckMask) == synAckMask {
+                    response = candidate
+                    break
+                }
+            }
+            guard let response else {
+                continue
             }
             let payload = response.payload
             if response.acknowledgement != sequence || payload.count < 13 {
@@ -237,6 +260,9 @@ public final class IAP2Link {
             var acknowledged = false
 
             for attempt in 1...6 {
+                if shouldCancel() {
+                    throw IAP2LinkError.timeout("iAP2 send cancelled")
+                }
                 let pkt = RLIAP2Packet(
                     flags: RLIAP2LinkFlags.ACK.rawValue,
                     sequence: sequence,
@@ -247,11 +273,16 @@ public final class IAP2Link {
                 try writePacket(pkt)
 
                 let deadline = CFAbsoluteTimeGetCurrent() + retransmitSeconds
-                while true {
+                while !shouldCancel() {
                     let remaining = deadline - CFAbsoluteTimeGetCurrent()
                     if remaining <= 0 { break }
                     guard let incoming = try readPacket(timeout: remaining) else {
-                        break
+                        // A non-cancellation socket.nudge() (e.g. live coordinate update) can wake
+                        // readPacket early; keep waiting for the peer ACK until the true deadline.
+                        if CFAbsoluteTimeGetCurrent() >= deadline || shouldCancel() {
+                            break
+                        }
+                        continue
                     }
                     try accept(incoming)
                     if (incoming.flags & RLIAP2LinkFlags.ACK.rawValue) != 0 &&
@@ -261,6 +292,9 @@ public final class IAP2Link {
                     }
                 }
                 if acknowledged { break }
+                if shouldCancel() {
+                    throw IAP2LinkError.timeout("iAP2 send cancelled")
+                }
                 emit("retransmit", ["attempt": attempt])
             }
 

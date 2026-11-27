@@ -1,6 +1,10 @@
 name: Reloc
 options:
   bundleIdPrefix: dev.reloc
+  developmentLanguage: en
+  knownRegions:
+    - en
+    - zh-Hans
   deploymentTarget:
     iOS: "17.0"
   xcodeVersion: "15.0"
@@ -22,7 +26,10 @@ targets:
     sources:
       - path: Reloc/Core
       - path: Reloc/UI
-      - path: Reloc/Resources/Assets.xcassets
+      - path: Reloc/Resources
+        excludes:
+          - "MFi"
+          - "MFi/**"
       - path: Reloc/Resources/MFi
         buildPhase: resources
         type: folder
@@ -30,40 +37,11 @@ targets:
       path: Reloc/Info.plist
       properties:
         CFBundleDisplayName: Reloc
-        CFBundleShortVersionString: "1.0.2"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.0.4"
+        CFBundleVersion: "5"
         LSRequiresIPhoneOS: true
         LSSupportsOpeningDocumentsInPlace: true
         UIFileSharingEnabled: true
-        CFBundleDocumentTypes:
-          - CFBundleTypeName: Reloc Pairing Record
-            CFBundleTypeRole: Viewer
-            LSHandlerRank: Alternate
-            LSItemContentTypes:
-              - dev.reloc.rppairing
-              - dev.reloc.mobiledevicepairing
-              - com.apple.property-list
-              - public.xml
-        UTImportedTypeDeclarations:
-          - UTTypeIdentifier: dev.reloc.rppairing
-            UTTypeDescription: Remote Pairing File
-            UTTypeConformsTo:
-              - public.data
-              - public.content
-              - com.apple.property-list
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - rppairing
-          - UTTypeIdentifier: dev.reloc.mobiledevicepairing
-            UTTypeDescription: Mobile Device Pairing File
-            UTTypeConformsTo:
-              - public.data
-              - public.content
-              - com.apple.property-list
-            UTTypeTagSpecification:
-              public.filename-extension:
-                - mobiledevicepairing
-                - mobilepair
         UIApplicationSupportsIndirectInputEvents: true
         UILaunchScreen: {}
         UIRequiresFullScreen: true
@@ -76,17 +54,11 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSLocalNetworkUsageDescription: Reloc 通过本地网络发现这台设备并完成配对，回环由你的外部代理提供。
-        NSBonjourServices:
-          - _remotepairing-pairable-host._tcp
-          - _remotepairing._tcp
-        NSLocationWhenInUseUsageDescription: 定位注入期间用于保持 Reloc 在后台运行并触发系统定位服务订阅。
-        NSLocationAlwaysAndWhenInUseUsageDescription: 定位注入期间用于保持 Reloc 在后台持续运行并防止系统挂起导致定位失效。
+        NSLocationWhenInUseUsageDescription: Used during location injection to keep Reloc running in the background and trigger system Location Services subscription.
+        NSLocationAlwaysAndWhenInUseUsageDescription: Used during location injection to keep Reloc active in the background and prevent system suspension from dropping the simulated location.
         UIBackgroundModes:
           - location
           - audio
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.reloc.ios
@@ -95,8 +67,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
     dependencies:
-      - framework: Vendor/RelocDeviceBridge.xcframework
-        embed: false
       - sdk: Security.framework
       - sdk: MapKit.framework
       - sdk: CoreLocation.framework

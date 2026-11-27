@@ -5,12 +5,10 @@ import CoreVideo
 import Foundation
 import UIKit
 
-/// Floating Picture-in-Picture (PiP) live guidance card displayed over iOS Settings during
-/// on-device Remote Pairing. Works inside the single main app bundle without needing a
-/// separate Widget Extension provisioning profile.
+/// Floating live guidance while switching system Location Services off and on.
 @MainActor
-final class PairingPiPPresenter: NSObject, ObservableObject {
-    static let shared = PairingPiPPresenter()
+final class LocationRefreshPresenter: NSObject, ObservableObject {
+    static let shared = LocationRefreshPresenter()
 
     @Published private(set) var isSupported: Bool = AVPictureInPictureController.isPictureInPictureSupported()
     @Published private(set) var isActive = false
@@ -19,25 +17,16 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     private var hostView: SampleBufferHostView?
     private var pipController: AVPictureInPictureController?
     private var possibleObserver: NSKeyValueObservation?
-    private var refreshTimer: Timer?
     private var dismissTimer: Timer?
 
     private var stepIndex: Int = 1
-    private var headline: String = "准备设备配对…"
-    private var subtitle: String = "请保持本机网络回环已开启"
-    private var pin: String?
+    private var headline: String = L10n.tr("pip.preparing.headline")
+    private var subtitle: String = L10n.tr("pip.preparing.subtitle")
     private var countdownSeconds: Int?
-    private var mode: Mode = .pairing
     private var outcome: Outcome = .inProgress
-    private var deadline: Date = Date().addingTimeInterval(300)
     private var frameCounter: Int64 = 0
     private var wantsAutoStart = false
     private var pixelBufferPool: CVPixelBufferPool?
-
-    enum Mode {
-        case pairing
-        case locationRefresh
-    }
 
     enum Outcome {
         case inProgress
@@ -49,49 +38,13 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         super.init()
     }
 
-    func startSession(deadline: Date) {
-        dismissTimer?.invalidate()
-        dismissTimer = nil
-
-        self.mode = .pairing
-        self.deadline = deadline
-        self.stepIndex = 1
-        self.headline = "准备本机配对服务…"
-        self.subtitle = "正在启动 Bonjour 配对广播"
-        self.pin = nil
-        self.countdownSeconds = nil
-        self.outcome = .inProgress
-        self.wantsAutoStart = true
-
-        guard AVPictureInPictureController.isPictureInPictureSupported() else {
-            isSupported = false
-            return
-        }
-        isSupported = true
-
-        configureAudioSession()
-        ensureControllerAttached()
-        enqueueCurrentFrame()
-        startRefreshTimer()
-
-        // Try starting PiP once the system marks it possible (short warmup).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.tryStartPiPIfDesired()
-        }
-    }
-
     func startLocationRefreshGuide() {
         dismissTimer?.invalidate()
         dismissTimer = nil
-        refreshTimer?.invalidate()
-        refreshTimer = nil
 
-        self.mode = .locationRefresh
-        self.deadline = Date().addingTimeInterval(180)
         self.stepIndex = 1
-        self.headline = "① 关闭系统「定位服务」"
-        self.subtitle = "关闭后将自动开始 5 秒倒计时，无需手动计时"
-        self.pin = nil
+        self.headline = L10n.tr("pip.step1.headline")
+        self.subtitle = L10n.tr("pip.step1.subtitle")
         self.countdownSeconds = nil
         self.outcome = .inProgress
         self.wantsAutoStart = true
@@ -112,65 +65,32 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     }
 
     func updateLocationRefresh(step: Int, headline: String, subtitle: String, countdown: Int? = nil) {
-        if self.mode == .locationRefresh,
-           self.outcome == .inProgress,
+        if self.outcome == .inProgress,
            self.stepIndex == step,
            self.headline == headline,
            self.subtitle == subtitle,
            self.countdownSeconds == countdown {
             return
         }
-        self.mode = .locationRefresh
         self.stepIndex = step
         self.headline = headline
         self.subtitle = subtitle
-        self.pin = nil
         self.countdownSeconds = countdown
         self.outcome = .inProgress
         enqueueCurrentFrame()
     }
 
     func finishLocationRefresh(succeeded: Bool, message: String, headline: String? = nil) {
-        self.mode = .locationRefresh
         self.outcome = succeeded ? .succeeded : .failed
         self.stepIndex = succeeded ? 3 : self.stepIndex
-        self.headline = headline ?? (succeeded ? "外设定位已 100% 生效" : "定位刷新已取消")
+        self.headline = headline ?? (succeeded ? L10n.tr("pip.finish.succeeded.headline") : L10n.tr("pip.finish.cancelled.headline"))
         self.subtitle = message
-        self.pin = nil
         self.countdownSeconds = nil
         self.wantsAutoStart = false
         enqueueCurrentFrame()
 
         dismissTimer?.invalidate()
         let dTimer = Timer(timeInterval: succeeded ? 3.5 : 2.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                self?.teardown()
-            }
-        }
-        RunLoop.main.add(dTimer, forMode: .common)
-        dismissTimer = dTimer
-    }
-
-    func update(step: Int, headline: String, subtitle: String, pin: String? = nil) {
-        self.stepIndex = step
-        self.headline = headline
-        self.subtitle = subtitle
-        self.pin = pin
-        self.outcome = .inProgress
-        enqueueCurrentFrame()
-    }
-
-    func finish(succeeded: Bool, message: String) {
-        self.outcome = succeeded ? .succeeded : .failed
-        self.stepIndex = succeeded ? 3 : self.stepIndex
-        self.headline = succeeded ? "配对成功 · 记录已保存" : "配对未完成"
-        self.subtitle = message
-        self.pin = nil
-        self.wantsAutoStart = false
-        enqueueCurrentFrame()
-
-        dismissTimer?.invalidate()
-        let dTimer = Timer(timeInterval: succeeded ? 3.5 : 4.0, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.teardown()
             }
@@ -203,8 +123,6 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     func teardown() {
         dismissTimer?.invalidate()
         dismissTimer = nil
-        refreshTimer?.invalidate()
-        refreshTimer = nil
         wantsAutoStart = false
 
         if let pip = pipController, pip.isPictureInPictureActive {
@@ -280,17 +198,6 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         if !pip.isPictureInPictureActive && pip.isPictureInPicturePossible {
             pip.startPictureInPicture()
         }
-    }
-
-    private func startRefreshTimer() {
-        refreshTimer?.invalidate()
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.enqueueCurrentFrame()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
     }
 
     private func enqueueCurrentFrame() {
@@ -435,9 +342,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         let accentColor: UIColor
         switch outcome {
         case .inProgress:
-            accentColor = pin != nil
-                ? UIColor(red: 0.98, green: 0.67, blue: 0.16, alpha: 1)
-                : UIColor(red: 0.30, green: 0.56, blue: 1.0, alpha: 1)
+            accentColor = UIColor(red: 0.30, green: 0.56, blue: 1.0, alpha: 1)
         case .succeeded:
             accentColor = UIColor(red: 0.16, green: 0.82, blue: 0.54, alpha: 1)
         case .failed:
@@ -446,11 +351,11 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         accentColor.setFill()
         UIRectFill(CGRect(x: 0, y: 0, width: rect.width, height: 6))
 
-        // Header badge: "Reloc · 设备配对"
+        // Header badge
         let dotRect = CGRect(x: 24, y: 26, width: 12, height: 12)
         UIBezierPath(ovalIn: dotRect).fill()
 
-        let headerText = (mode == .locationRefresh ? "Reloc · 一键触发定位" : "Reloc · 设备配对指引") as NSString
+        let headerText = L10n.tr("pip.header") as NSString
         headerText.draw(
             at: CGPoint(x: 46, y: 20),
             withAttributes: [
@@ -461,13 +366,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
 
         // Right countdown or step pill
         if outcome == .inProgress {
-            let statusBadge: NSString
-            if mode == .locationRefresh {
-                statusBadge = String(format: "步骤 %d/3 · 实时监测", stepIndex) as NSString
-            } else {
-                let remaining = max(0, Int(deadline.timeIntervalSinceNow.rounded()))
-                statusBadge = String(format: "%02d:%02d  步骤 %d/3", remaining / 60, remaining % 60, stepIndex) as NSString
-            }
+            let statusBadge = L10n.format("pip.step_badge", stepIndex) as NSString
             let size = statusBadge.size(withAttributes: [
                 .font: UIFont.monospacedDigitSystemFont(ofSize: 19, weight: .semibold),
             ])
@@ -484,51 +383,31 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         UIColor.white.withAlphaComponent(0.12).setFill()
         UIRectFill(CGRect(x: 24, y: 58, width: rect.width - 48, height: 1.5))
 
-        if let pin, !pin.isEmpty {
-            // Giant 6-digit PIN layout
-            let formatted = Self.formatPin(pin) as NSString
-            let pinAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedDigitSystemFont(ofSize: 78, weight: .bold),
-                .foregroundColor: UIColor(red: 1.0, green: 0.80, blue: 0.28, alpha: 1),
-            ]
-            let pinSize = formatted.size(withAttributes: pinAttrs)
-            formatted.draw(
-                at: CGPoint(x: (rect.width - pinSize.width) / 2, y: 70),
-                withAttributes: pinAttrs
-            )
-
-            let hint = "请在「系统设置」弹窗中输入以上 6 位配对码" as NSString
-            let hintAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 21, weight: .medium),
-                .foregroundColor: UIColor.white.withAlphaComponent(0.78),
-            ]
-            let hintSize = hint.size(withAttributes: hintAttrs)
-            hint.draw(
-                at: CGPoint(x: (rect.width - hintSize.width) / 2, y: 170),
-                withAttributes: hintAttrs
-            )
-        } else if mode == .locationRefresh, let secs = countdownSeconds {
-            let text = (secs > 0 ? "\(secs) 秒" : "现在重新打开！") as NSString
+        if let secs = countdownSeconds {
+            let text = (secs > 0 ? L10n.format("pip.countdown.seconds", secs) : L10n.tr("pip.countdown.now")) as NSString
             let bigAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedDigitSystemFont(ofSize: secs > 0 ? 68 : 48, weight: .bold),
+                .font: UIFont.monospacedDigitSystemFont(ofSize: secs > 0 ? 68 : 44, weight: .bold),
                 .foregroundColor: secs > 0
                     ? UIColor(red: 1.0, green: 0.80, blue: 0.28, alpha: 1)
                     : UIColor(red: 0.16, green: 0.86, blue: 0.56, alpha: 1),
             ]
             let bigSize = text.size(withAttributes: bigAttrs)
             text.draw(
-                at: CGPoint(x: (rect.width - bigSize.width) / 2, y: secs > 0 ? 72 : 84),
+                at: CGPoint(x: (rect.width - bigSize.width) / 2, y: secs > 0 ? 70 : 84),
                 withAttributes: bigAttrs
             )
 
             let hint = subtitle as NSString
+            let hintPara = NSMutableParagraphStyle()
+            hintPara.alignment = .center
+            hintPara.lineBreakMode = .byWordWrapping
             let hintAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 21, weight: .medium),
+                .font: UIFont.systemFont(ofSize: 20, weight: .medium),
                 .foregroundColor: UIColor.white.withAlphaComponent(0.82),
+                .paragraphStyle: hintPara,
             ]
-            let hintSize = hint.size(withAttributes: hintAttrs)
             hint.draw(
-                at: CGPoint(x: (rect.width - hintSize.width) / 2, y: 170),
+                in: CGRect(x: 24, y: 158, width: rect.width - 48, height: 54),
                 withAttributes: hintAttrs
             )
         } else {
@@ -557,12 +436,6 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
         }
     }
 
-    static func formatPin(_ pin: String) -> String {
-        let digits = pin.filter { !$0.isWhitespace }
-        guard digits.count == 6 else { return pin }
-        return "\(digits.prefix(3))  \(digits.suffix(3))"
-    }
-
     private static func activeKeyWindow() -> UIWindow? {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -575,7 +448,7 @@ final class PairingPiPPresenter: NSObject, ObservableObject {
     }
 }
 
-extension PairingPiPPresenter: AVPictureInPictureControllerDelegate {
+extension LocationRefreshPresenter: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor in
             self.isActive = true
@@ -595,7 +468,7 @@ extension PairingPiPPresenter: AVPictureInPictureControllerDelegate {
     }
 }
 
-extension PairingPiPPresenter: AVPictureInPictureSampleBufferPlaybackDelegate {
+extension LocationRefreshPresenter: AVPictureInPictureSampleBufferPlaybackDelegate {
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {}
 
     nonisolated func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {

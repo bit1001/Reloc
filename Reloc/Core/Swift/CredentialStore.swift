@@ -1,6 +1,4 @@
-import CryptoKit
 import Foundation
-import Security
 import SwiftUI
 
 public enum AppAppearanceMode: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -12,9 +10,9 @@ public enum AppAppearanceMode: String, CaseIterable, Codable, Identifiable, Send
 
     public var title: String {
         switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
+        case .system: return L10n.tr("appearance.system")
+        case .light: return L10n.tr("appearance.light")
+        case .dark: return L10n.tr("appearance.dark")
         }
     }
 
@@ -37,19 +35,19 @@ public enum MapSource: String, CaseIterable, Codable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .appleNative: return "Apple 地图（系统默认）"
-        case .globalStreet: return "全球街道图（Esri · WGS-84）"
-        case .globalOSM: return "OpenStreetMap（开源 · WGS-84）"
-        case .globalSatellite: return "全球卫星图（Esri · WGS-84）"
+        case .appleNative: return L10n.tr("map.source.apple")
+        case .globalStreet: return L10n.tr("map.source.esri_street")
+        case .globalOSM: return L10n.tr("map.source.osm")
+        case .globalSatellite: return L10n.tr("map.source.esri_satellite")
         }
     }
 
     public var shortTitle: String {
         switch self {
-        case .appleNative: return "Apple 地图"
-        case .globalStreet: return "全球街道"
-        case .globalOSM: return "OSM 地图"
-        case .globalSatellite: return "全球卫星"
+        case .appleNative: return L10n.tr("map.source.apple.short")
+        case .globalStreet: return L10n.tr("map.source.esri_street.short")
+        case .globalOSM: return L10n.tr("map.source.osm.short")
+        case .globalSatellite: return L10n.tr("map.source.esri_satellite.short")
         }
     }
 
@@ -68,9 +66,9 @@ public enum MapDisplayStyle: String, CaseIterable, Codable, Identifiable, Sendab
 
     public var title: String {
         switch self {
-        case .standard: return "标准"
-        case .satellite: return "卫星"
-        case .hybrid: return "混合"
+        case .standard: return L10n.tr("map.style.standard")
+        case .satellite: return L10n.tr("map.style.satellite")
+        case .hybrid: return L10n.tr("map.style.hybrid")
         }
     }
 }
@@ -150,62 +148,18 @@ public struct InterruptedSessionRecord: Codable, Equatable, Sendable {
     }
 }
 
-public enum PairingKind: String, Equatable, Sendable {
-    case remotePairing = "Remote Pairing"
-    case lockdown = "Lockdown"
-}
-
-public enum SavedPairing: @unchecked Sendable {
-    case remotePairing(data: Data, identifier: String)
-    case lockdown(record: RLPairingRecord)
-
-    public var kind: PairingKind {
-        switch self {
-        case .remotePairing: return .remotePairing
-        case .lockdown: return .lockdown
-        }
-    }
-}
-
-public struct PairingStatus: Equatable {
-    public var isLoaded: Bool
-    public var kind: PairingKind?
-    public var summaryID: String?
-    public var errorMessage: String?
-}
-
-public enum PairingImportError: LocalizedError {
-    case oversized
-    case invalidFormat(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .oversized:
-            return "配对文件体积异常。"
-        case .invalidFormat(let detail):
-            return detail
-        }
-    }
-}
-
-/// Persists device pairing records, loopback settings, favorites, recent 30 history items,
-/// speed/unit/appearance preferences, and interrupted-session recovery snapshots.
+/// Persists location preferences, favorites, history and recovery snapshots.
 public final class CredentialStore {
-    private let fileManager = FileManager.default
     private let defaults = UserDefaults.standard
 
     private enum Keys {
-        static let host = "reloc.host"
-        static let remotePort = "reloc.remotePort"
-        static let lockdownPort = "reloc.port"
-        static let serviceName = "reloc.serviceName"
-        static let deviceUDID = "reloc.deviceUDID"
         static let interval = "reloc.interval"
         static let duration = "reloc.duration"
         static let gcj02Correction = "reloc.gcj02Correction"
         static let backgroundKeepAlive = "reloc.backgroundKeepAlive"
         static let microJitter = "reloc.microJitter"
         static let appearance = "reloc.appearance"
+        static let language = L10n.languageDefaultsKey
         static let mapStyle = "reloc.mapStyle"
         static let mapSource = "reloc.mapSource"
         static let favorites = "reloc.favorites"
@@ -214,67 +168,6 @@ public final class CredentialStore {
         static let lastLatitude = "reloc.lastLat"
         static let lastLongitude = "reloc.lastLon"
         static let lastAltitude = "reloc.lastAlt"
-    }
-
-    private enum Keychain {
-        static let service = "dev.reloc.ios.pairing"
-        static let account = "active_device_pairing"
-    }
-
-    private var appSupportDir: URL {
-        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("Reloc", isDirectory: true)
-        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var mutableDir = dir
-        try? mutableDir.setResourceValues(values)
-        return dir
-    }
-
-    public var documentsDir: URL {
-        fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-    }
-
-    private var pairingURL: URL {
-        appSupportDir.appendingPathComponent("device.pairing.plist")
-    }
-
-    private var legacyPairingURL: URL {
-        appSupportDir.appendingPathComponent("pairing.mobiledevicepairing")
-    }
-
-    // MARK: - Connection & Behavior Settings
-
-    public var host: String {
-        get { defaults.string(forKey: Keys.host) ?? "10.7.0.1" }
-        set { defaults.set(newValue, forKey: Keys.host) }
-    }
-
-    public var remotePort: UInt16 {
-        get {
-            let saved = defaults.integer(forKey: Keys.remotePort)
-            return saved > 0 && saved <= 65535 ? UInt16(saved) : 49152
-        }
-        set { defaults.set(Int(newValue), forKey: Keys.remotePort) }
-    }
-
-    public var lockdownPort: UInt16 {
-        get {
-            let saved = defaults.integer(forKey: Keys.lockdownPort)
-            return saved > 0 && saved <= 65535 ? UInt16(saved) : 62078
-        }
-        set { defaults.set(Int(newValue), forKey: Keys.lockdownPort) }
-    }
-
-    public var serviceName: String {
-        get { defaults.string(forKey: Keys.serviceName) ?? "com.apple.carkit.service" }
-        set { defaults.set(newValue, forKey: Keys.serviceName) }
-    }
-
-    public var deviceUDID: String {
-        get { defaults.string(forKey: Keys.deviceUDID) ?? "" }
-        set { defaults.set(newValue, forKey: Keys.deviceUDID) }
     }
 
     public var intervalSeconds: Double {
@@ -316,6 +209,11 @@ public final class CredentialStore {
         set { defaults.set(newValue.rawValue, forKey: Keys.appearance) }
     }
 
+    public var appLanguage: AppLanguage {
+        get { defaults.string(forKey: Keys.language).flatMap(AppLanguage.init) ?? .system }
+        set { defaults.set(newValue.rawValue, forKey: Keys.language) }
+    }
+
     public var mapStyle: MapDisplayStyle {
         get { defaults.string(forKey: Keys.mapStyle).flatMap(MapDisplayStyle.init) ?? .standard }
         set { defaults.set(newValue.rawValue, forKey: Keys.mapStyle) }
@@ -351,8 +249,8 @@ public final class CredentialStore {
               let decoded = try? JSONDecoder().decode([FavoriteLocation].self, from: data) else {
             return [
                 FavoriteLocation(name: "Apple Park", subtitle: "Cupertino, CA", latitude: 37.334606, longitude: -122.009102, altitude: 20.0),
-                FavoriteLocation(name: "东京站", subtitle: "日本东京都千代田区", latitude: 35.681236, longitude: 139.767125, altitude: 10.0),
-                FavoriteLocation(name: "台北 101", subtitle: "台北市信义区", latitude: 25.033964, longitude: 121.564468, altitude: 12.0),
+                FavoriteLocation(name: L10n.tr("favorite.tokyo_station.name"), subtitle: L10n.tr("favorite.tokyo_station.subtitle"), latitude: 35.681236, longitude: 139.767125, altitude: 10.0),
+                FavoriteLocation(name: L10n.tr("favorite.taipei_101.name"), subtitle: L10n.tr("favorite.taipei_101.subtitle"), latitude: 25.033964, longitude: 121.564468, altitude: 12.0),
             ]
         }
         return decoded
@@ -392,228 +290,6 @@ public final class CredentialStore {
         if let data = try? JSONEncoder().encode(record) {
             defaults.set(data, forKey: Keys.interruptedSession)
         }
-    }
-
-    // MARK: - Pairing Validation & Storage (Remote Pairing + Lockdown)
-
-    public static func validatePairingData(_ raw: Data) throws -> (normalizedXML: Data, pairing: SavedPairing) {
-        guard raw.count > 0 && raw.count < 2_000_000 else {
-            throw PairingImportError.oversized
-        }
-        guard let dict = try PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any] else {
-            throw PairingImportError.invalidFormat("配对文件必须是有效的 plist 格式。")
-        }
-        let xml = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
-
-        if let privateKey = dict["private_key"] as? Data,
-           let publicKey = dict["public_key"] as? Data,
-           let identifier = dict["identifier"] as? String,
-           !identifier.isEmpty {
-            guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: privateKey),
-                  key.publicKey.rawRepresentation == publicKey else {
-                throw PairingImportError.invalidFormat("Remote Pairing 配对文件中的 Ed25519 公私钥不匹配。")
-            }
-            return (xml, .remotePairing(data: xml, identifier: identifier))
-        }
-
-        let lockdown = try RLPairingRecord(plistData: xml)
-        return (xml, .lockdown(record: lockdown))
-    }
-
-    @discardableResult
-    public func importPairingFile(from url: URL) throws -> SavedPairing {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        if url.hasDirectoryPath || ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true) {
-            throw PairingImportError.invalidFormat("请选择具体的配对文件，而不是文件夹。")
-        }
-
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            var coordError: NSError?
-            var readResult: Result<Data, Error>?
-            let coordinator = NSFileCoordinator()
-            coordinator.coordinate(readingItemAt: url, options: [.withoutChanges], error: &coordError) { coordinatedURL in
-                readResult = Result { try Data(contentsOf: coordinatedURL) }
-            }
-            if let readResult {
-                data = try readResult.get()
-            } else if let coordError {
-                throw coordError
-            } else {
-                throw error
-            }
-        }
-        return try importPairingData(data)
-    }
-
-    @discardableResult
-    public func importPairingData(_ raw: Data) throws -> SavedPairing {
-        let (xml, pairing) = try Self.validatePairingData(raw)
-        try savePairingBytes(xml)
-        try? fileManager.removeItem(at: legacyPairingURL)
-        return pairing
-    }
-
-    private func savePairingBytes(_ xml: Data) throws {
-        let status = writePairingToKeychain(xml)
-        if status == errSecSuccess {
-            try? fileManager.removeItem(at: pairingURL)
-            return
-        }
-        if status == errSecMissingEntitlement {
-            // Unsigned simulator / test-host fallback with backup exclusion.
-            var target = pairingURL
-            try xml.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try? target.setResourceValues(values)
-            return
-        }
-        throw PairingImportError.invalidFormat("无法写入系统钥匙串（OSStatus \(status)）。")
-    }
-
-    private func writePairingToKeychain(_ data: Data) -> OSStatus {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: Keychain.service,
-            kSecAttrAccount: Keychain.account,
-        ]
-        SecItemDelete(query as CFDictionary)
-        var attrs = query
-        attrs[kSecValueData] = data
-        attrs[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        return SecItemAdd(attrs as CFDictionary, nil)
-    }
-
-    private func readPairingFromKeychain() -> Data? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: Keychain.service,
-            kSecAttrAccount: Keychain.account,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess else { return nil }
-        return result as? Data
-    }
-
-    private func deletePairingFromKeychain() {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: Keychain.service,
-            kSecAttrAccount: Keychain.account,
-        ]
-        SecItemDelete(query as CFDictionary)
-    }
-
-    @discardableResult
-    public func saveOnDevicePairedIdentity(_ rawRecord: Data, hostIRK: Data, udid: String) throws -> SavedPairing {
-        guard hostIRK.count == 16 else {
-            throw PairingImportError.invalidFormat("配对主机身份无效。")
-        }
-        var dict = (try PropertyListSerialization.propertyList(from: rawRecord, format: nil) as? [String: Any]) ?? [:]
-        dict["reloc_host_irk"] = hostIRK
-        let xml = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
-        let pairing = try importPairingData(xml)
-        if !udid.isEmpty {
-            deviceUDID = udid
-        }
-        return pairing
-    }
-
-    /// Builds the optional `record` + `host_irk` request payload so re-pairing reuses the existing host identity.
-    public func loadOnDeviceRepairingRequest() -> [String: String] {
-        guard case .remotePairing(let xmlData, _) = loadPairing().0,
-              let dict = try? PropertyListSerialization.propertyList(from: xmlData, format: nil) as? [String: Any] else {
-            return [:]
-        }
-        var req: [String: String] = ["record": xmlData.base64EncodedString()]
-        if let irk = dict["reloc_host_irk"] as? Data, irk.count == 16 {
-            req["host_irk"] = irk.base64EncodedString()
-        }
-        return req
-    }
-
-    public func importDiscoveredPairingInDocuments() -> SavedPairing? {
-        if loadPairing().0 != nil { return nil }
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: documentsDir,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
-        ) else { return nil }
-
-        let validExts: Set<String> = ["mobiledevicepairing", "mobilepair", "rppairing", "plist"]
-        let candidates: [(url: URL, date: Date, data: Data)] = files.prefix(100).compactMap { url in
-            guard validExts.contains(url.pathExtension.lowercased()),
-                  let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]),
-                  vals.isRegularFile == true,
-                  vals.isSymbolicLink != true,
-                  (vals.fileSize ?? Int.max) < 2_000_000,
-                  let data = try? Data(contentsOf: url),
-                  (try? Self.validatePairingData(data)) != nil else {
-                return nil
-            }
-            return (url, vals.contentModificationDate ?? .distantPast, data)
-        }
-
-        guard let newest = candidates.max(by: { $0.date < $1.date }),
-              let imported = try? importPairingData(newest.data) else {
-            return nil
-        }
-        // Remove plaintext pairing file from shared Documents once safely imported.
-        try? fileManager.removeItem(at: newest.url)
-        return imported
-    }
-
-    public func loadPairing() -> (SavedPairing?, PairingStatus) {
-        let keychainData = readPairingFromKeychain()
-        let diskURL = fileManager.fileExists(atPath: pairingURL.path) ? pairingURL : legacyPairingURL
-        let rawData: Data
-        let loadedFromDisk: Bool
-
-        if let keychainData {
-            rawData = keychainData
-            loadedFromDisk = false
-        } else if fileManager.fileExists(atPath: diskURL.path) {
-            do {
-                rawData = try Data(contentsOf: diskURL)
-                loadedFromDisk = true
-            } catch {
-                return (nil, PairingStatus(isLoaded: false, kind: nil, summaryID: nil, errorMessage: error.localizedDescription))
-            }
-        } else {
-            return (nil, PairingStatus(isLoaded: false, kind: nil, summaryID: nil, errorMessage: nil))
-        }
-
-        do {
-            let (xml, pairing) = try Self.validatePairingData(rawData)
-            if loadedFromDisk && writePairingToKeychain(xml) == errSecSuccess {
-                try? fileManager.removeItem(at: pairingURL)
-                try? fileManager.removeItem(at: legacyPairingURL)
-            }
-            let summary: String
-            switch pairing {
-            case .remotePairing(_, let identifier):
-                summary = identifier
-            case .lockdown(let record):
-                summary = record.hostID
-            }
-            return (pairing, PairingStatus(isLoaded: true, kind: pairing.kind, summaryID: summary, errorMessage: nil))
-        } catch {
-            return (nil, PairingStatus(isLoaded: false, kind: nil, summaryID: nil, errorMessage: error.localizedDescription))
-        }
-    }
-
-    public func removePairingFile() {
-        deletePairingFromKeychain()
-        try? fileManager.removeItem(at: pairingURL)
-        try? fileManager.removeItem(at: legacyPairingURL)
-        deviceUDID = ""
     }
 
     // MARK: - Internal Bundled MFi Signer

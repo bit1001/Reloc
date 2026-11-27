@@ -6,24 +6,6 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Reloc</string>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Reloc Pairing Record</string>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>dev.reloc.rppairing</string>
-				<string>dev.reloc.mobiledevicepairing</string>
-				<string>com.apple.property-list</string>
-				<string>public.xml</string>
-			</array>
-		</dict>
-	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -35,29 +17,17 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.2</string>
+	<string>1.0.4</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>5</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_remotepairing-pairable-host._tcp</string>
-		<string>_remotepairing._tcp</string>
-	</array>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Reloc 通过本地网络发现这台设备并完成配对，回环由你的外部代理提供。</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>定位注入期间用于保持 Reloc 在后台持续运行并防止系统挂起导致定位失效。</string>
+	<string>Used during location injection to keep Reloc active in the background and prevent system suspension from dropping the simulated location.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>定位注入期间用于保持 Reloc 在后台运行并触发系统定位服务订阅。</string>
+	<string>Used during location injection to keep Reloc running in the background and trigger system Location Services subscription.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -83,48 +53,6 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>
-	<key>UTImportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-				<string>public.content</string>
-				<string>com.apple.property-list</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Remote Pairing File</string>
-			<key>UTTypeIdentifier</key>
-			<string>dev.reloc.rppairing</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>rppairing</string>
-				</array>
-			</dict>
-		</dict>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-				<string>public.content</string>
-				<string>com.apple.property-list</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Mobile Device Pairing File</string>
-			<key>UTTypeIdentifier</key>
-			<string>dev.reloc.mobiledevicepairing</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>mobiledevicepairing</string>
-					<string>mobilepair</string>
-				</array>
-			</dict>
-		</dict>
 	</array>
 </dict>
 </plist>

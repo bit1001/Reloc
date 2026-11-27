@@ -9,10 +9,17 @@ struct ProtocolLogsView: View {
     @State private var copiedBanner = false
 
     enum LogCategory: String, CaseIterable, Identifiable {
-        case all = "全部"
-        case nmea = "NMEA"
-        case errors = "错误"
+        case all
+        case nmea
+        case errors
         var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .all: return L10n.tr("logs.category.all")
+            case .nmea: return L10n.tr("logs.category.nmea")
+            case .errors: return L10n.tr("logs.category.errors")
+            }
+        }
     }
 
     init(viewModel: RelocViewModel) {
@@ -65,7 +72,7 @@ struct ProtocolLogsView: View {
                             RelocTheme.hapticLight()
                             categoryFilter = cat
                         } label: {
-                            Text(cat.rawValue)
+                            Text(cat.title)
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
@@ -74,7 +81,7 @@ struct ProtocolLogsView: View {
                         }
                     }
                     Spacer()
-                    Text("\(filteredEvents.count) 条事件")
+                    Text(L10n.format("logs.events_count", filteredEvents.count))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -88,9 +95,9 @@ struct ProtocolLogsView: View {
                         Image(systemName: "waveform.path.ecg.rectangle")
                             .font(.system(size: 40))
                             .foregroundStyle(RelocTheme.accent.opacity(0.6))
-                        Text("暂无协议事件")
+                        Text(L10n.tr("logs.empty.title"))
                             .font(.headline)
-                        Text("开始定位或连接验证后，这里会实时展示连接握手与 NMEA 数据流。")
+                        Text(L10n.tr("logs.empty.subtitle"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -137,9 +144,9 @@ struct ProtocolLogsView: View {
                 }
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("定位实测与日志")
+            .navigationTitle(L10n.tr("logs.title"))
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $filterText, prompt: "筛选事件（如 FFFA / acknowledged）")
+            .searchable(text: $filterText, prompt: L10n.tr("logs.search.prompt"))
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Button {
@@ -170,9 +177,9 @@ struct ProtocolLogsView: View {
             HStack(spacing: 8) {
                 SettingsIconBadge(systemName: "sensor.tag.radiowaves.forward.fill", color: monitor.isMonitoring ? RelocTheme.emerald : RelocTheme.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("CoreLocation 实时实测")
+                    Text(L10n.tr("logs.telemetry.title"))
                         .font(.subheadline.weight(.semibold))
-                    Text(monitor.isMonitoring ? "正在实时读取系统上报定位来源" : "验证系统是否识别为外设 GPS")
+                    Text(monitor.isMonitoring ? L10n.tr("logs.telemetry.monitoring") : L10n.tr("logs.telemetry.idle"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -185,7 +192,7 @@ struct ProtocolLogsView: View {
                         monitor.requestAndStart()
                     }
                 } label: {
-                    Text(monitor.isMonitoring ? "停止" : "开始实测")
+                    Text(monitor.isMonitoring ? L10n.tr("common.stop") : L10n.tr("logs.telemetry.start"))
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
@@ -199,26 +206,26 @@ struct ProtocolLogsView: View {
 
             if let t = monitor.latest {
                 HStack(spacing: 8) {
-                    telemetryMetric(label: "纬度 / 经度", value: String(format: "%.5f, %.5f", t.latitude, t.longitude))
-                    telemetryMetric(label: "精度 / 海拔", value: String(format: "±%.1fm · %.0fm", t.horizontalAccuracy, t.altitude))
+                    telemetryMetric(label: L10n.tr("logs.telemetry.coords"), value: String(format: "%.5f, %.5f", t.latitude, t.longitude))
+                    telemetryMetric(label: L10n.tr("logs.telemetry.acc_alt"), value: String(format: "±%.1fm · %.0fm", t.horizontalAccuracy, t.altitude))
                 }
 
                 HStack(spacing: 8) {
                     flagBadge(
-                        title: "软件模拟",
+                        title: L10n.tr("logs.telemetry.simulated"),
                         key: "isSimulatedBySoftware",
                         value: t.isSimulatedBySoftware,
                         goodWhen: false
                     )
                     flagBadge(
-                        title: "外设来源",
+                        title: L10n.tr("logs.telemetry.accessory"),
                         key: "isProducedByAccessory",
                         value: t.isProducedByAccessory,
                         goodWhen: true
                     )
                 }
             } else {
-                Text("点击右上角「开始实测」，即可实时查看 iOS `sourceInformation` 中的软件模拟与外设定位标记。")
+                Text(L10n.tr("logs.telemetry.hint"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

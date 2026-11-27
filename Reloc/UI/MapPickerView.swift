@@ -133,14 +133,14 @@ struct MapPickerView: View {
                 cameraTarget = coord
             }
         }
-        .confirmationDialog("停止定位并恢复真实位置？", isPresented: $showStopConfirm, titleVisibility: .visible) {
-            Button("停止并恢复", role: .destructive) {
+        .confirmationDialog(L10n.tr("map.stop_confirm.title"), isPresented: $showStopConfirm, titleVisibility: .visible) {
+            Button(L10n.tr("map.stop_confirm.button"), role: .destructive) {
                 RelocTheme.hapticMedium()
                 viewModel.stopAndRestore()
             }
-            Button("取消", role: .cancel) {}
+            Button(L10n.tr("common.cancel"), role: .cancel) {}
         } message: {
-            Text("停止后系统将逐步切回本机真实 GPS 位置。")
+            Text(L10n.tr("map.stop_confirm.message"))
         }
     }
 
@@ -163,7 +163,7 @@ struct MapPickerView: View {
             }
             .buttonStyle(.plain)
 
-            TextField("搜索地点或输入 纬度, 经度", text: $searchText)
+            TextField(L10n.tr("map.search.placeholder"), text: $searchText)
                 .font(.subheadline)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -186,7 +186,7 @@ struct MapPickerView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清空搜索")
+                    .accessibilityLabel(L10n.tr("map.search.clear"))
                 } else {
                     Button {
                         RelocTheme.hapticLight()
@@ -200,7 +200,7 @@ struct MapPickerView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("手动输入坐标")
+                    .accessibilityLabel(L10n.tr("map.search.manual"))
                 }
             }
             .frame(width: 28, height: 44)
@@ -255,7 +255,7 @@ struct MapPickerView: View {
                     Image(systemName: "location.fill")
                         .font(.caption2)
                         .foregroundStyle(RelocTheme.emerald)
-                    Text(String(format: "%.4f, %.4f", viewModel.targetLocation.latitude, viewModel.targetLocation.longitude))
+                    Text(String(format: "%.4f, %.4f · %.0fm", viewModel.targetLocation.latitude, viewModel.targetLocation.longitude, viewModel.targetLocation.altitude))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 }
                 .padding(.horizontal, 10)
@@ -273,7 +273,7 @@ struct MapPickerView: View {
             }
 
             Menu {
-                Section("地图数据源") {
+                Section(L10n.tr("map.menu.source")) {
                     ForEach(MapSource.allCases) { source in
                         Button {
                             viewModel.mapSource = source
@@ -283,7 +283,7 @@ struct MapPickerView: View {
                     }
                 }
                 if viewModel.mapSource == .appleNative {
-                    Section("Apple 地图样式") {
+                    Section(L10n.tr("map.menu.style")) {
                         ForEach(MapDisplayStyle.allCases) { style in
                             Button {
                                 viewModel.mapStyle = style
@@ -293,9 +293,9 @@ struct MapPickerView: View {
                         }
                     }
                 }
-                Section("坐标") {
+                Section(L10n.tr("map.menu.coordinates")) {
                     Button { showManualCoordinate = true } label: {
-                        Label("手动输入经纬度", systemImage: "number")
+                        Label(L10n.tr("map.menu.manual_input"), systemImage: "number")
                     }
                 }
             } label: {
@@ -329,26 +329,24 @@ struct MapPickerView: View {
         case .connecting:
             return RelocTheme.amber
         case .idle:
-            if viewModel.connectionVerified { return RelocTheme.emerald }
-            return viewModel.pairingStatus.isLoaded ? RelocTheme.accent : RelocTheme.crimson
+            return RelocTheme.accent
         }
     }
 
     private var statusPillTitle: String {
         switch viewModel.injectionPhase {
         case .activeConfirmed:
-            return "外设定位已生效 ✓"
+            return L10n.tr("map.status.confirmed")
         case .injectingPendingLock:
             return viewModel.needsLocationServiceRefresh
-                ? "待刷新生效 · ACK \(viewModel.snapshot.packetsAcknowledged)"
-                : "切换定位中 · ACK \(viewModel.snapshot.packetsAcknowledged)"
+                ? L10n.format("map.status.pending_refresh", viewModel.snapshot.packetsAcknowledged)
+                : L10n.format("map.status.switching", viewModel.snapshot.packetsAcknowledged)
         case .waitingSubscription:
-            return viewModel.needsLocationServiceRefresh ? "已鉴权 · 待刷新订阅" : "已鉴权 · 唤醒订阅中…"
+            return viewModel.needsLocationServiceRefresh ? L10n.tr("map.status.auth_refresh") : L10n.tr("map.status.auth_waking")
         case .connecting:
-            return "建立回环连接中…"
+            return L10n.tr("map.status.connecting")
         case .idle:
-            if viewModel.connectionVerified { return "回环已就绪" }
-            return viewModel.pairingStatus.isLoaded ? "已配对 · 可一键定位" : "未配对设备"
+            return L10n.tr("map.status.idle")
         }
     }
 
@@ -408,7 +406,7 @@ struct MapPickerView: View {
                             .foregroundStyle(RelocTheme.accent)
                             .frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name ?? "未知地点")
+                            Text(item.name ?? L10n.tr("map.unknown_place"))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Color(uiColor: .label))
                                 .lineLimit(1)
@@ -487,15 +485,15 @@ struct MapPickerView: View {
         HStack(spacing: 10) {
             SettingsIconBadge(systemName: "arrow.counterclockwise", color: RelocTheme.amber)
             VStack(alignment: .leading, spacing: 1) {
-                Text("上次定位会话意外中断")
+                Text(L10n.tr("map.interrupted.title"))
                     .font(.caption.weight(.bold))
-                Text("恢复上次位置：\(record.placeName)")
+                Text(L10n.format("map.interrupted.subtitle", record.placeName))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
-            Button("恢复") {
+            Button(L10n.tr("common.restore")) {
                 RelocTheme.hapticMedium()
                 viewModel.resumeInterruptedSession()
                 cameraTarget = viewModel.activeMapCoordinate
@@ -545,7 +543,7 @@ struct MapPickerView: View {
                         .foregroundStyle(viewModel.pendingLocation != nil ? RelocTheme.amber : (viewModel.snapshot.isRunning ? RelocTheme.emerald : RelocTheme.accent))
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(viewModel.selectedPlaceName)
                         .font(.headline)
                         .lineLimit(1)
@@ -557,7 +555,7 @@ struct MapPickerView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Button {
-                            let text = "\(viewModel.selectedPlaceName) (\(String(format: "%.6f, %.6f", viewModel.inspectedLocation.latitude, viewModel.inspectedLocation.longitude)))"
+                            let text = "\(viewModel.selectedPlaceName) (\(String(format: "%.6f, %.6f, %.1fm", viewModel.inspectedLocation.latitude, viewModel.inspectedLocation.longitude, viewModel.inspectedLocation.altitude)))"
                             UIPasteboard.general.string = text
                             RelocTheme.hapticLight()
                             copiedAddressToast = true
@@ -567,6 +565,35 @@ struct MapPickerView: View {
                                 .font(.caption)
                                 .foregroundStyle(copiedAddressToast ? RelocTheme.emerald : RelocTheme.accent)
                         }
+                    }
+                    HStack(spacing: 6) {
+                        Button {
+                            RelocTheme.hapticLight()
+                            showManualCoordinate = true
+                        } label: {
+                            HStack(spacing: 3) {
+                                if viewModel.isResolvingAltitude {
+                                    ProgressView().controlSize(.mini)
+                                    Text(L10n.tr("map.altitude.resolving"))
+                                } else {
+                                    Image(systemName: "mountain.2.fill")
+                                        .font(.system(size: 9, weight: .semibold))
+                                    Text(L10n.format("map.altitude.value", viewModel.inspectedLocation.altitude))
+                                        .monospacedDigit()
+                                }
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(RelocTheme.accent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(RelocTheme.accent.opacity(0.12), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+
+                        Text(String(format: "%.5f, %.5f", viewModel.inspectedLocation.latitude, viewModel.inspectedLocation.longitude))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
 
@@ -596,24 +623,12 @@ struct MapPickerView: View {
                 }
             }
 
-            if !viewModel.pairingStatus.isLoaded {
-                Button(action: switchToConfig) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(RelocTheme.amber)
-                        Text("尚未配对这台 iPhone，前往「设备连接」一键配对").font(.caption.weight(.semibold))
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption2.weight(.bold))
-                    }
-                    .padding(10)
-                    .background(RelocTheme.amber.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .foregroundStyle(.primary)
-            } else if viewModel.locationAuthorizationStatus == .denied || viewModel.locationAuthorizationStatus == .restricted {
+            if viewModel.locationAuthorizationStatus == .denied || viewModel.locationAuthorizationStatus == .restricted {
                 HStack(spacing: 8) {
                     Image(systemName: "location.slash.fill").foregroundStyle(RelocTheme.crimson)
-                    Text("未开启定位权限，无法自动触发外设订阅").font(.caption.weight(.semibold))
+                    Text(L10n.tr("map.permission.denied")).font(.caption.weight(.semibold))
                     Spacer()
-                    Button("去开启") {
+                    Button(L10n.tr("common.enable")) {
                         viewModel.openAppSettings()
                     }
                     .font(.caption.weight(.bold))
@@ -627,9 +642,9 @@ struct MapPickerView: View {
             } else if viewModel.isLocationReducedAccuracy {
                 HStack(spacing: 8) {
                     Image(systemName: "scope").foregroundStyle(RelocTheme.amber)
-                    Text("未开启「精确位置」，可能导致外设 GPS 无法锁定或偏移").font(.caption.weight(.semibold))
+                    Text(L10n.tr("map.permission.reduced")).font(.caption.weight(.semibold))
                     Spacer()
-                    Button("去开启") {
+                    Button(L10n.tr("common.enable")) {
                         viewModel.openAppSettings()
                     }
                     .font(.caption.weight(.bold))
@@ -647,7 +662,7 @@ struct MapPickerView: View {
             } else if viewModel.realLocationRestoredNotice {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(RelocTheme.emerald)
-                    Text("已恢复本机真实 GPS 定位")
+                    Text(L10n.tr("map.restored.notice"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(RelocTheme.emerald)
                     Spacer()
@@ -655,7 +670,7 @@ struct MapPickerView: View {
                 .padding(10)
                 .background(RelocTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else if let err = viewModel.snapshot.lastError {
-                Text("上次错误：\(err)")
+                Text(L10n.format("map.last_error", err))
                     .font(.caption)
                     .foregroundStyle(RelocTheme.crimson)
                     .lineLimit(2)
@@ -665,7 +680,7 @@ struct MapPickerView: View {
                 if viewModel.snapshot.isRunning {
                     if viewModel.pendingLocation != nil {
                         RelocPrimaryButton(
-                            title: "更新到此位置",
+                            title: L10n.tr("map.button.update_location"),
                             systemImage: "paperplane.fill",
                             gradient: RelocTheme.accentGradient
                         ) {
@@ -673,7 +688,7 @@ struct MapPickerView: View {
                         }
                     }
                     RelocPrimaryButton(
-                        title: "停止并恢复",
+                        title: L10n.tr("map.button.stop_restore"),
                         systemImage: "stop.fill",
                         gradient: RelocTheme.crimsonGradient
                     ) {
@@ -681,7 +696,7 @@ struct MapPickerView: View {
                     }
                 } else {
                     RelocPrimaryButton(
-                        title: "开始定位",
+                        title: L10n.tr("map.button.start"),
                         systemImage: "paperplane.fill",
                         gradient: RelocTheme.accentGradient,
                         disabled: !viewModel.canStartSession
@@ -706,7 +721,7 @@ struct MapPickerView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 7) {
                     Image(systemName: "arrow.triangle.2.circlepath.circle.fill").foregroundStyle(RelocTheme.amber)
-                    Text("外设连接已断开，但系统仍在缓存上次定位（室内弱信号常见）。点击下方一键刷新定位服务即可立即恢复真实位置。")
+                    Text(L10n.tr("map.restore.banner.stale"))
                         .font(.caption2)
                         .foregroundStyle(.primary)
                 }
@@ -714,7 +729,7 @@ struct MapPickerView: View {
                     RelocTheme.hapticMedium()
                     viewModel.launchOneTapRestoreRefresh()
                 } label: {
-                    Label("一键刷新定位服务（恢复真实位置）", systemImage: "pip.enter")
+                    Label(L10n.tr("map.restore.banner.button"), systemImage: "pip.enter")
                         .font(.caption.weight(.bold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
@@ -727,11 +742,11 @@ struct MapPickerView: View {
         } else {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("已发送断开与失效报文，正在唤醒本机真实 GPS 恢复定位…")
+                Text(L10n.tr("map.restore.banner.working"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("立即刷新") {
+                Button(L10n.tr("map.restore.banner.refresh_now")) {
                     RelocTheme.hapticLight()
                     viewModel.launchOneTapRestoreRefresh()
                 }
@@ -754,10 +769,10 @@ struct MapPickerView: View {
                 Image(systemName: "checkmark.seal.fill")
                     .foregroundStyle(RelocTheme.emerald)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("外设 GPS 已 100% 生效")
+                    Text(L10n.tr("map.live.confirmed.title"))
                         .font(.caption.weight(.bold))
                         .foregroundStyle(RelocTheme.emerald)
-                    Text("系统已确认外设来源（isProducedByAccessory = true），可直接切去任意 App")
+                    Text(L10n.tr("map.live.confirmed.subtitle"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -774,8 +789,8 @@ struct MapPickerView: View {
                     Image(systemName: "bolt.circle.fill").foregroundStyle(RelocTheme.amber)
                     Text(
                         viewModel.injectionPhase == .waitingSubscription
-                            ? "MFi 鉴权已通过，但系统尚未订阅外设 GPS。点击下方一键刷新（含悬浮 5 秒倒计时）即可唤醒订阅。"
-                            : "NMEA 已连通，但系统仍在沿用本机缓存定位。点击下方一键刷新（含悬浮 5 秒倒计时）即可 100% 强制切换。"
+                            ? L10n.tr("map.live.waiting_sub.detail")
+                            : L10n.tr("map.live.pending_lock.detail")
                     )
                         .font(.caption2)
                         .foregroundStyle(.primary)
@@ -785,7 +800,7 @@ struct MapPickerView: View {
                         RelocTheme.hapticMedium()
                         viewModel.launchOneTapLocationRefresh()
                     } label: {
-                        Label("一键刷新定位服务（浮窗指引）", systemImage: "pip.enter")
+                        Label(L10n.tr("map.live.refresh_button"), systemImage: "pip.enter")
                             .font(.caption.weight(.bold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
@@ -796,7 +811,7 @@ struct MapPickerView: View {
                         RelocTheme.hapticLight()
                         viewModel.retryAutoLock()
                     } label: {
-                        Text("重试")
+                        Text(L10n.tr("common.retry"))
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -813,16 +828,16 @@ struct MapPickerView: View {
                 ProgressView().controlSize(.small)
                 Text(
                     viewModel.injectionPhase == .connecting
-                        ? "正在连接设备回环并完成 MFi 鉴权…"
+                        ? L10n.tr("map.live.connecting")
                         : (viewModel.injectionPhase == .waitingSubscription
-                            ? "鉴权成功，正在自动唤醒系统外设 GPS 订阅…"
-                            : "正在高速注入 NMEA 坐标，等待系统锁定外设源…")
+                            ? L10n.tr("map.live.waking_sub")
+                            : L10n.tr("map.live.injecting"))
                 )
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 Spacer()
                 if viewModel.snapshot.authenticated {
-                    Button("强制刷新") {
+                    Button(L10n.tr("map.live.force_refresh")) {
                         RelocTheme.hapticLight()
                         viewModel.launchOneTapLocationRefresh()
                     }
@@ -891,26 +906,33 @@ struct MapPickerView: View {
         if let mkError = error as? MKError {
             switch mkError.code {
             case .placemarkNotFound:
-                return "未找到匹配地点，可尝试换个关键词"
+                return L10n.tr("map.search.error.not_found")
             case .loadingThrottled:
-                return "搜索过于频繁，请稍后再试"
+                return L10n.tr("map.search.error.throttled")
             default:
-                return "搜索失败，请检查网络连接"
+                return L10n.tr("map.search.error.network")
             }
         }
-        return error != nil ? "搜索失败，请检查网络连接" : "未找到匹配地点，可尝试换个关键词"
+        return error != nil ? L10n.tr("map.search.error.network") : L10n.tr("map.search.error.not_found")
     }
 
-    private func parseCoordinatePair(_ input: String) -> (lat: Double, lon: Double)? {
+    private func parseCoordinateInput(_ input: String) -> (lat: Double, lon: Double, alt: Double?)? {
         let normalized = input.replacingOccurrences(of: "，", with: ",")
         let parts = normalized.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2,
+        guard parts.count == 2 || parts.count == 3,
               let lat = Double(parts[0]), let lon = Double(parts[1]),
               lat.isFinite, lon.isFinite,
               (-90.0...90.0).contains(lat), (-180.0...180.0).contains(lon) else {
             return nil
         }
-        return (lat, lon)
+        if parts.count == 3 {
+            let altToken = parts[2].trimmingCharacters(in: CharacterSet(charactersIn: "mM "))
+            guard let alt = Double(altToken), alt.isFinite, (-500.0...50_000.0).contains(alt) else {
+                return nil
+            }
+            return (lat, lon, alt)
+        }
+        return (lat, lon, nil)
     }
 
     private func handleSearchTextChange(_ text: String) {
@@ -919,7 +941,7 @@ struct MapPickerView: View {
         if !searchResults.isEmpty {
             searchResults = []
         }
-        guard !trimmed.isEmpty, parseCoordinatePair(trimmed) == nil else {
+        guard !trimmed.isEmpty, parseCoordinateInput(trimmed) == nil else {
             searchCompleter.clear()
             return
         }
@@ -986,8 +1008,13 @@ struct MapPickerView: View {
         searchStatusMessage = nil
         searchCompleter.clear()
 
-        if let coord = parseCoordinatePair(trimmed) {
-            viewModel.selectWGSLocation(TargetLocation(latitude: coord.lat, longitude: coord.lon, altitude: viewModel.targetLocation.altitude))
+        if let coord = parseCoordinateInput(trimmed) {
+            let loc = TargetLocation(
+                latitude: coord.lat,
+                longitude: coord.lon,
+                altitude: coord.alt ?? viewModel.inspectedLocation.altitude
+            )
+            viewModel.selectWGSLocation(loc, resolveAltitude: coord.alt == nil)
             cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
             searchResults = []
             searchText = ""
@@ -1040,7 +1067,7 @@ private enum LocationSearchSuggestion: Identifiable {
     var title: String {
         switch self {
         case .completion(let c, _): return c.title
-        case .mapItem(let m, _): return m.name ?? "未知地点"
+        case .mapItem(let m, _): return m.name ?? L10n.tr("map.unknown_place")
         }
     }
 
@@ -1200,7 +1227,7 @@ private struct InteractiveMKMapView: UIViewRepresentable {
 
         let activeAnn = TaggedAnnotation(kind: .active)
         activeAnn.coordinate = activeCoordinate
-        activeAnn.title = "当前位置"
+        activeAnn.title = L10n.tr("map.pin.active")
         mapView.addAnnotation(activeAnn)
         context.coordinator.activeAnnotation = activeAnn
 
@@ -1225,6 +1252,10 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         applyMapStyle(to: uiView)
 
         if let activeAnn = context.coordinator.activeAnnotation {
+            let activeTitle = L10n.tr("map.pin.active")
+            if activeAnn.title != activeTitle {
+                activeAnn.title = activeTitle
+            }
             if abs(activeAnn.coordinate.latitude - activeCoordinate.latitude) > 1e-9 ||
                abs(activeAnn.coordinate.longitude - activeCoordinate.longitude) > 1e-9 {
                 activeAnn.coordinate = activeCoordinate
@@ -1235,12 +1266,16 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         }
 
         if let pending = pendingCoordinate {
+            let pendingTitle = L10n.tr("map.pin.pending")
             if let existing = context.coordinator.pendingAnnotation {
+                if existing.title != pendingTitle {
+                    existing.title = pendingTitle
+                }
                 existing.coordinate = pending
             } else {
                 let ann = TaggedAnnotation(kind: .pending)
                 ann.coordinate = pending
-                ann.title = "待更新位置"
+                ann.title = pendingTitle
                 uiView.addAnnotation(ann)
                 context.coordinator.pendingAnnotation = ann
             }
@@ -1343,9 +1378,9 @@ private struct PlacesSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("分类", selection: $tab) {
-                    Text("收藏 (\(viewModel.favorites.count))").tag(0)
-                    Text("最近记录 (\(viewModel.recents.count))").tag(1)
+                Picker(L10n.tr("places.picker"), selection: $tab) {
+                    Text(L10n.format("places.tab.favorites", viewModel.favorites.count)).tag(0)
+                    Text(L10n.format("places.tab.recents", viewModel.recents.count)).tag(1)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -1353,10 +1388,10 @@ private struct PlacesSheet: View {
 
                 List {
                     if tab == 0 {
-                        Section("收藏当前选中位置") {
+                        Section(L10n.tr("places.save_current.header")) {
                             HStack {
-                                TextField("输入名称", text: $newFavoriteName)
-                                Button("保存") {
+                                TextField(L10n.tr("places.name.placeholder"), text: $newFavoriteName)
+                                Button(L10n.tr("common.save")) {
                                     viewModel.saveCurrentAsFavorite(name: newFavoriteName)
                                     newFavoriteName = ""
                                 }
@@ -1364,9 +1399,9 @@ private struct PlacesSheet: View {
                             }
                         }
 
-                        Section("已保存收藏") {
+                        Section(L10n.tr("places.favorites.header")) {
                             if viewModel.favorites.isEmpty {
-                                Text("暂无收藏地点").foregroundStyle(.secondary)
+                                Text(L10n.tr("places.favorites.empty")).foregroundStyle(.secondary)
                             } else {
                                 ForEach(viewModel.favorites) { fav in
                                     Button {
@@ -1390,13 +1425,13 @@ private struct PlacesSheet: View {
                                         Button(role: .destructive) {
                                             viewModel.deleteFavorite(id: fav.id)
                                         } label: {
-                                            Label("删除", systemImage: "trash")
+                                            Label(L10n.tr("common.delete"), systemImage: "trash")
                                         }
                                         Button {
                                             renameText = fav.name
                                             renamingFavorite = fav
                                         } label: {
-                                            Label("重命名", systemImage: "pencil")
+                                            Label(L10n.tr("common.rename"), systemImage: "pencil")
                                         }
                                         .tint(.orange)
                                     }
@@ -1406,7 +1441,7 @@ private struct PlacesSheet: View {
                     } else {
                         Section {
                             if viewModel.recents.isEmpty {
-                                Text("暂无最近使用记录").foregroundStyle(.secondary)
+                                Text(L10n.tr("places.recents.empty")).foregroundStyle(.secondary)
                             } else {
                                 ForEach(viewModel.recents) { item in
                                     Button {
@@ -1430,17 +1465,17 @@ private struct PlacesSheet: View {
                                         Button(role: .destructive) {
                                             viewModel.deleteRecent(id: item.id)
                                         } label: {
-                                            Label("删除", systemImage: "trash")
+                                            Label(L10n.tr("common.delete"), systemImage: "trash")
                                         }
                                     }
                                 }
                             }
                         } header: {
                             HStack {
-                                Text("最近使用（最多 30 条）")
+                                Text(L10n.tr("places.recents.header"))
                                 Spacer()
                                 if !viewModel.recents.isEmpty {
-                                    Button("清空") { viewModel.clearRecents() }
+                                    Button(L10n.tr("common.clear")) { viewModel.clearRecents() }
                                         .font(.caption)
                                 }
                             }
@@ -1448,20 +1483,20 @@ private struct PlacesSheet: View {
                     }
                 }
             }
-            .navigationTitle("收藏与历史")
+            .navigationTitle(L10n.tr("places.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button(L10n.tr("common.close")) { dismiss() }
                 }
             }
-            .alert("重命名收藏", isPresented: Binding(
+            .alert(L10n.tr("places.rename.title"), isPresented: Binding(
                 get: { renamingFavorite != nil },
                 set: { if !$0 { renamingFavorite = nil } }
             )) {
-                TextField("新名称", text: $renameText)
-                Button("取消", role: .cancel) { renamingFavorite = nil }
-                Button("保存") {
+                TextField(L10n.tr("places.rename.placeholder"), text: $renameText)
+                Button(L10n.tr("common.cancel"), role: .cancel) { renamingFavorite = nil }
+                Button(L10n.tr("common.save")) {
                     if let fav = renamingFavorite {
                         viewModel.renameFavorite(id: fav.id, newName: renameText)
                     }
@@ -1482,7 +1517,7 @@ private struct ManualCoordinateSheet: View {
     @State private var altText = ""
     @State private var favoriteName = ""
 
-    private var parsedCoordinate: (lat: Double, lon: Double, alt: Double)? {
+    private var parsedCoordinate: (lat: Double, lon: Double, alt: Double, autoAltitude: Bool)? {
         guard let lat = Double(latText.trimmingCharacters(in: .whitespaces)),
               let lon = Double(lonText.trimmingCharacters(in: .whitespaces)),
               lat.isFinite, lon.isFinite,
@@ -1491,46 +1526,54 @@ private struct ManualCoordinateSheet: View {
             return nil
         }
         let trimmedAlt = altText.trimmingCharacters(in: .whitespaces)
-        let alt = Double(trimmedAlt).flatMap { $0.isFinite ? $0 : nil } ?? viewModel.inspectedLocation.altitude
-        return (lat, lon, alt)
+        if trimmedAlt.isEmpty {
+            return (lat, lon, viewModel.inspectedLocation.altitude, true)
+        }
+        guard let alt = Double(trimmedAlt), alt.isFinite, (-500.0...50_000.0).contains(alt) else {
+            return nil
+        }
+        return (lat, lon, alt, false)
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("纬度 (-90 ~ 90)", text: $latText)
+                    TextField(L10n.tr("manual.lat.placeholder"), text: $latText)
                         .keyboardType(.numbersAndPunctuation)
-                    TextField("经度 (-180 ~ 180)", text: $lonText)
+                    TextField(L10n.tr("manual.lon.placeholder"), text: $lonText)
                         .keyboardType(.numbersAndPunctuation)
-                    TextField("海拔 (米)", text: $altText)
+                    TextField(L10n.tr("manual.alt.placeholder"), text: $altText)
                         .keyboardType(.numbersAndPunctuation)
                 } header: {
-                    Text("WGS-84 坐标")
+                    Text(L10n.tr("manual.section.header"))
                 } footer: {
                     if parsedCoordinate == nil {
-                        Text("请输入合法的纬度（-90 ~ 90）和经度（-180 ~ 180）。")
+                        Text(L10n.tr("manual.footer.invalid"))
                             .foregroundStyle(RelocTheme.crimson)
+                    } else {
+                        Text(L10n.tr("manual.footer.hint"))
                     }
                 }
 
-                Section("保存到收藏（可选）") {
-                    TextField("地点名称", text: $favoriteName)
+                Section(L10n.tr("manual.favorite.header")) {
+                    TextField(L10n.tr("manual.favorite.placeholder"), text: $favoriteName)
                 }
             }
-            .navigationTitle("手动输入坐标")
+            .navigationTitle(L10n.tr("manual.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(L10n.tr("common.cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("应用") {
+                    Button(L10n.tr("common.apply")) {
                         guard let parsed = parsedCoordinate else { return }
                         let trimmedName = favoriteName.trimmingCharacters(in: .whitespaces)
                         viewModel.selectWGSLocation(
                             TargetLocation(latitude: parsed.lat, longitude: parsed.lon, altitude: parsed.alt),
-                            name: trimmedName.isEmpty ? nil : trimmedName
+                            name: trimmedName.isEmpty ? nil : trimmedName,
+                            resolveAltitude: parsed.autoAltitude
                         )
                         if !trimmedName.isEmpty {
                             viewModel.saveCurrentAsFavorite(name: trimmedName)

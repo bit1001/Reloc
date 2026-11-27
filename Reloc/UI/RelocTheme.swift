@@ -156,7 +156,7 @@ struct SettingsIconBadge: View {
     }
 }
 
-/// Subtle animated pulsing dot for live NMEA / pairing states.
+/// Subtle animated pulsing dot for live NMEA states.
 struct PulsingStatusDot: View {
     let color: Color
     let isPulsing: Bool

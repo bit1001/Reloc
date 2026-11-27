@@ -21,28 +21,6 @@ public final class RelocViewModel: ObservableObject {
     private let geocoder = CLGeocoder()
     private var cancellables = Set<AnyCancellable>()
 
-    // MARK: - Loopback & Connection Settings
-    @Published public var host: String {
-        didSet {
-            store.host = host
-            invalidateDeviceConnection()
-        }
-    }
-    @Published public var remotePort: UInt16 {
-        didSet {
-            store.remotePort = remotePort
-            invalidateDeviceConnection()
-        }
-    }
-    @Published public var lockdownPort: UInt16 {
-        didSet {
-            store.lockdownPort = lockdownPort
-            invalidateDeviceConnection()
-        }
-    }
-    @Published public var serviceName: String {
-        didSet { store.serviceName = serviceName }
-    }
     @Published public var intervalSeconds: Double {
         didSet { store.intervalSeconds = intervalSeconds }
     }
@@ -74,6 +52,12 @@ public final class RelocViewModel: ObservableObject {
     @Published public var appearanceMode: AppAppearanceMode {
         didSet { store.appearanceMode = appearanceMode }
     }
+    @Published public var appLanguage: AppLanguage {
+        didSet {
+            store.appLanguage = appLanguage
+            reverseGeocode(wgsLocation: inspectedLocation)
+        }
+    }
     @Published public var mapStyle: MapDisplayStyle {
         didSet { store.mapStyle = mapStyle }
     }
@@ -89,9 +73,9 @@ public final class RelocViewModel: ObservableObject {
             pushLocationToSession()
         }
     }
-    /// Candidate pin dropped on the map while a session is already active (allows browsing before tapping "更新到此位置").
+    /// Candidate pin dropped on the map while a session is already active (allows browsing before tapping Update).
     @Published public var pendingLocation: TargetLocation?
-    @Published public var selectedPlaceName: String = "选中位置"
+    @Published public var selectedPlaceName: String = L10n.tr("map.selected_place")
     @Published public var selectedPlaceAddress: String = ""
 
     // MARK: - Favorites, Recents (30), & Recovery
@@ -99,14 +83,8 @@ public final class RelocViewModel: ObservableObject {
     @Published public var recents: [RecentLocation] = []
     @Published public var interruptedSession: InterruptedSessionRecord?
 
-    // MARK: - Device Pairing & Verification State
-    @Published public var pairingStatus: PairingStatus
-    @Published public var deviceUDID: String
-    @Published public var connectionVerified = false
-    @Published public var isVerifyingConnection = false
-    @Published public var connectionCheckFailed = false
-    @Published public var deviceConnectionStatus = "请先配对这台 iPhone"
-    @Published public var discoveredDevicePort: UInt16?
+    // MARK: - Altitude Resolution
+    @Published public var isResolvingAltitude = false
 
     // MARK: - Session & Diagnostics
     @Published public var snapshot = SessionSnapshot()
@@ -122,7 +100,6 @@ public final class RelocViewModel: ObservableObject {
     @Published public var events: [ProtocolEvent] = []
     @Published public var alertMessage: String?
 
-    private var savedPairing: SavedPairing?
     private var mfiSigner: RLMFiSigner?
     private var session: AccessoryLocationSession?
     private var lastKnownRealLocation: TargetLocation?
@@ -133,42 +110,34 @@ public final class RelocViewModel: ObservableObject {
     private var locationStopDebounceTask: Task<Void, Never>?
     private var locationRefreshSawDisabled = false
     private var didAutoReconnectForSubscription = false
+    private var didAutoSoftReconnectForCurrentTarget = false
     private var loggedReducedAccuracyForSession = false
     private var restoreTask: Task<Void, Never>?
     private var isRestoreRefreshGuideActive = false
     private var lastRestoreAuthStatus: CLAuthorizationStatus = .notDetermined
     private var geocodeTask: Task<Void, Never>?
     private var geocodeGeneration: Int = 0
+    private var elevationTask: Task<Void, Never>?
+    private var elevationGeneration: Int = 0
 
     public init() {
-        self.host = store.host
-        self.remotePort = store.remotePort
-        self.lockdownPort = store.lockdownPort
-        self.serviceName = store.serviceName
         self.intervalSeconds = store.intervalSeconds
         self.durationSeconds = store.durationSeconds
         self.gcj02CorrectionEnabled = store.gcj02CorrectionEnabled
         self.backgroundKeepAliveEnabled = store.backgroundKeepAliveEnabled
         self.microJitterEnabled = store.microJitterEnabled
         self.appearanceMode = store.appearanceMode
+        self.appLanguage = store.appLanguage
         self.mapStyle = store.mapStyle
         self.mapSource = store.mapSource
         self.targetLocation = store.lastTargetLocation
         self.favorites = store.loadFavorites()
         self.recents = store.loadRecents()
         self.interruptedSession = store.loadInterruptedSession()
-        self.deviceUDID = store.deviceUDID
         self.locationAuthorizationStatus = coreLocation.authorizationStatus
         self.isLocationReducedAccuracy = coreLocation.isReducedAccuracy
 
         self.mfiSigner = store.loadBundledMFiSigner()
-
-        let (pairing, pairStat) = store.loadPairing()
-        self.savedPairing = pairing
-        self.pairingStatus = pairStat
-        self.deviceConnectionStatus = UIDevice.current.userInterfaceIdiom == .pad
-            ? "不支持 iPad（仅支持 iPhone）"
-            : (pairStat.isLoaded ? "配对记录已保存，等待连接验证" : "请先配对这台 iPhone")
 
         self.keepAlive.onDiagnostic = { [weak self] event, details in
             guard let self else { return }
@@ -253,7 +222,8 @@ public final class RelocViewModel: ObservableObject {
         selectWGSLocation(
             TargetLocation(latitude: wgs.latitude, longitude: wgs.longitude, altitude: inspectedLocation.altitude),
             name: name,
-            address: address
+            address: address,
+            resolveAltitude: true
         )
     }
 
@@ -283,11 +253,17 @@ public final class RelocViewModel: ObservableObject {
         selectWGSLocation(
             TargetLocation(latitude: wgs.latitude, longitude: wgs.longitude, altitude: inspectedLocation.altitude),
             name: name,
-            address: address
+            address: address,
+            resolveAltitude: true
         )
     }
 
-    public func selectWGSLocation(_ wgsLoc: TargetLocation, name: String? = nil, address: String? = nil) {
+    public func selectWGSLocation(
+        _ wgsLoc: TargetLocation,
+        name: String? = nil,
+        address: String? = nil,
+        resolveAltitude: Bool = false
+    ) {
         if snapshot.isRunning {
             // Keep active reported location unchanged until user taps "更新到此位置".
             pendingLocation = wgsLoc
@@ -301,13 +277,20 @@ public final class RelocViewModel: ObservableObject {
             selectedPlaceAddress = address ?? String(format: "%.5f, %.5f", wgsLoc.latitude, wgsLoc.longitude)
         } else {
             selectedPlaceName = String(format: "%.5f, %.5f", wgsLoc.latitude, wgsLoc.longitude)
-            selectedPlaceAddress = "正在解析地名…"
+            selectedPlaceAddress = L10n.tr("map.geocoding")
             reverseGeocode(wgsLocation: wgsLoc)
+        }
+
+        if resolveAltitude {
+            resolveElevation(for: wgsLoc)
+        } else {
+            cancelElevationResolution()
         }
     }
 
     public func clearPendingSelection() {
         pendingLocation = nil
+        cancelElevationResolution()
         reverseGeocode(wgsLocation: targetLocation)
     }
 
@@ -317,12 +300,118 @@ public final class RelocViewModel: ObservableObject {
         pendingLocation = nil
         isAccessoryLocationConfirmed = false
         needsLocationServiceRefresh = false
+        didAutoSoftReconnectForCurrentTarget = false
         session?.notifyLocationUpdated(resetKalman: true, burstSeconds: 10.0)
         recordRecent(name: selectedPlaceName, subtitle: selectedPlaceAddress, location: targetLocation)
         persistRecoveryRecord()
         if snapshot.isRunning {
             updateInjectionPhase()
             scheduleLockWatchdog()
+        }
+    }
+
+    // MARK: - Automatic Terrain Elevation Lookup
+
+    private func cancelElevationResolution() {
+        elevationTask?.cancel()
+        elevationTask = nil
+        elevationGeneration += 1
+        isResolvingAltitude = false
+    }
+
+    private func resolveElevation(for wgsLocation: TargetLocation) {
+        elevationTask?.cancel()
+        elevationGeneration += 1
+        let gen = elevationGeneration
+        let lat = wgsLocation.latitude
+        let lon = wgsLocation.longitude
+        isResolvingAltitude = true
+
+        elevationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.elevationGeneration == gen {
+                    self.isResolvingAltitude = false
+                }
+            }
+
+            var resolved = await self.fetchElevationWithOpenMeteo(latitude: lat, longitude: lon)
+            if resolved == nil && !Task.isCancelled {
+                resolved = await self.fetchElevationWithOpenTopoData(latitude: lat, longitude: lon)
+            }
+            guard !Task.isCancelled, self.elevationGeneration == gen, let altitude = resolved else { return }
+            let rounded = (min(50_000.0, max(-500.0, altitude)) * 10.0).rounded() / 10.0
+            self.applyResolvedAltitude(rounded, forLatitude: lat, longitude: lon)
+        }
+    }
+
+    private func applyResolvedAltitude(_ altitude: Double, forLatitude lat: Double, longitude lon: Double) {
+        if var pending = pendingLocation,
+           abs(pending.latitude - lat) < 1e-6,
+           abs(pending.longitude - lon) < 1e-6 {
+            pending.altitude = altitude
+            pendingLocation = pending
+            return
+        }
+        if abs(targetLocation.latitude - lat) < 1e-6,
+           abs(targetLocation.longitude - lon) < 1e-6 {
+            var updated = targetLocation
+            updated.altitude = altitude
+            targetLocation = updated
+            if snapshot.isRunning {
+                persistRecoveryRecord()
+            }
+        }
+    }
+
+    private func fetchElevationWithOpenMeteo(latitude: Double, longitude: Double) async -> Double? {
+        let latStr = String(format: "%.6f", latitude)
+        let lonStr = String(format: "%.6f", longitude)
+        guard let url = URL(string: "https://api.open-meteo.com/v1/elevation?latitude=\(latStr)&longitude=\(lonStr)") else {
+            return nil
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3.0
+        req.setValue("Reloc/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let values = json["elevation"] as? [NSNumber],
+                  let first = values.first else {
+                return nil
+            }
+            let alt = first.doubleValue
+            return alt.isFinite ? alt : nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchElevationWithOpenTopoData(latitude: Double, longitude: Double) async -> Double? {
+        let latStr = String(format: "%.6f", latitude)
+        let lonStr = String(format: "%.6f", longitude)
+        guard let url = URL(string: "https://api.opentopodata.org/v1/aster30m?locations=\(latStr),\(lonStr)") else {
+            return nil
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3.0
+        req.setValue("Reloc/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]],
+                  let first = results.first,
+                  let elev = first["elevation"] as? NSNumber else {
+                return nil
+            }
+            let alt = elev.doubleValue
+            return alt.isFinite ? alt : nil
+        } catch {
+            return nil
         }
     }
 
@@ -363,9 +452,9 @@ public final class RelocViewModel: ObservableObject {
             }
             guard !Task.isCancelled, self.geocodeGeneration == gen else { return }
 
-            // 4. Final fallback: never leave "正在解析地名…" stuck on screen.
+            // 4. Final fallback: never leave geocoding placeholder stuck on screen.
             self.selectedPlaceName = coordText
-            self.selectedPlaceAddress = "WGS-84 坐标"
+            self.selectedPlaceAddress = L10n.tr("map.wgs84_coord")
         }
     }
 
@@ -423,7 +512,8 @@ public final class RelocViewModel: ObservableObject {
     ) async -> (title: String, address: String)? {
         let latStr = String(format: "%.6f", wgsLocation.latitude)
         let lonStr = String(format: "%.6f", wgsLocation.longitude)
-        guard let url = URL(string: "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=\(latStr)&lon=\(lonStr)&zoom=18&addressdetails=1&accept-language=zh-CN,en") else {
+        let acceptLang = L10n.isChinese ? "zh-CN,en" : "en,zh-CN"
+        guard let url = URL(string: "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=\(latStr)&lon=\(lonStr)&zoom=18&addressdetails=1&accept-language=\(acceptLang)") else {
             return nil
         }
         var req = URLRequest(url: url)
@@ -473,7 +563,8 @@ public final class RelocViewModel: ObservableObject {
     ) async -> (title: String, address: String)? {
         let latStr = String(format: "%.6f", wgsLocation.latitude)
         let lonStr = String(format: "%.6f", wgsLocation.longitude)
-        guard let url = URL(string: "https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=\(latStr)&longitude=\(lonStr)&localityLanguage=zh") else {
+        let lang = L10n.isChinese ? "zh" : "en"
+        guard let url = URL(string: "https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=\(latStr)&longitude=\(lonStr)&localityLanguage=\(lang)") else {
             return nil
         }
         var req = URLRequest(url: url)
@@ -557,144 +648,18 @@ public final class RelocViewModel: ObservableObject {
         store.saveInterruptedSession(rec)
     }
 
-    // MARK: - Device Compatibility
-
-    public var isUnsupportedIPad: Bool {
-        UIDevice.current.userInterfaceIdiom == .pad
-    }
-
-    public static let unsupportedIPadMessage =
-        "当前设备为 iPad。由于 iPadOS 不提供 CarPlay / CarKit（com.apple.carkit.service）外设定位服务，Reloc 仅支持 iPhone 使用。"
-
-    // MARK: - Device Pairing & Loopback Verification
+    // MARK: - Session Readiness
 
     public var canStartSession: Bool {
-        !isUnsupportedIPad && savedPairing != nil && mfiSigner != nil && !snapshot.isRunning
-    }
-
-    public func invalidateDeviceConnection() {
-        connectionVerified = false
-        discoveredDevicePort = nil
-        connectionCheckFailed = false
-        deviceConnectionStatus = pairingStatus.isLoaded ? "配对记录已保存，等待连接验证" : "请先配对这台 iPhone"
-    }
-
-    public func startDevicePairing() {
-        if isUnsupportedIPad {
-            alertMessage = Self.unsupportedIPadMessage
-            return
-        }
-        guard !snapshot.isRunning, !isVerifyingConnection else { return }
-        DevicePairingCoordinator.shared.start(
-            existingRequest: store.loadOnDeviceRepairingRequest()
-        ) { [weak self] rawRecord, hostIRK, udid in
-            guard let self else { return }
-            _ = try self.store.saveOnDevicePairedIdentity(rawRecord, hostIRK: hostIRK, udid: udid)
-            self.reloadPairing()
-            self.invalidateDeviceConnection()
-            self.testConnection(silent: true)
-        }
-    }
-
-    public func importDiscoveredPairing() {
-        guard !snapshot.isRunning, !DevicePairingCoordinator.shared.isRunning else { return }
-        if store.importDiscoveredPairingInDocuments() != nil {
-            reloadPairing()
-            invalidateDeviceConnection()
-            events.append(ProtocolEvent(name: "pairing_auto_imported", detail: "{\"event\":\"pairing_auto_imported\"}"))
-        }
-    }
-
-    public func verifyConnectionIfNeeded() async {
-        guard pairingStatus.isLoaded,
-              !connectionVerified,
-              !isVerifyingConnection,
-              !snapshot.isRunning,
-              !DevicePairingCoordinator.shared.isRunning else {
-            return
-        }
-        testConnection(silent: true)
-    }
-
-    public func testConnection(silent: Bool = false) {
-        if isUnsupportedIPad {
-            deviceConnectionStatus = "不支持 iPad（仅支持 iPhone）"
-            if !silent {
-                alertMessage = Self.unsupportedIPadMessage
-            }
-            return
-        }
-        guard !isVerifyingConnection, !snapshot.isRunning else { return }
-        guard let pairing = savedPairing else {
-            deviceConnectionStatus = "请先配对这台 iPhone 或导入配对文件"
-            return
-        }
-
-        let currentHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentRemotePort = remotePort
-        let currentLockdownPort = lockdownPort
-
-        isVerifyingConnection = true
-        connectionVerified = false
-        connectionCheckFailed = false
-        deviceConnectionStatus = "正在发现服务并验证配对身份…"
-
-        Task {
-            defer { isVerifyingConnection = false }
-            do {
-                let result = try await AccessoryLocationSession.verifyConnection(
-                    host: currentHost,
-                    remotePort: currentRemotePort,
-                    lockdownPort: currentLockdownPort,
-                    pairing: pairing
-                )
-                guard self.host.trimmingCharacters(in: .whitespacesAndNewlines) == currentHost,
-                      self.remotePort == currentRemotePort,
-                      self.lockdownPort == currentLockdownPort else {
-                    self.invalidateDeviceConnection()
-                    return
-                }
-                if !result.udid.isEmpty {
-                    self.deviceUDID = result.udid
-                    self.store.deviceUDID = result.udid
-                }
-                self.discoveredDevicePort = result.port
-                self.connectionVerified = true
-                self.deviceConnectionStatus = "设备身份与回环连接已验证"
-                self.events.append(ProtocolEvent(
-                    name: "connection_verified",
-                    detail: "{\"event\":\"connection_verified\",\"port\":\(result.port),\"service\":\"\(result.carkitService ?? "lockdown")\"}"
-                ))
-            } catch {
-                self.connectionVerified = false
-                self.connectionCheckFailed = true
-                self.deviceConnectionStatus = error.localizedDescription
-                self.events.append(ProtocolEvent(
-                    name: "connection_check_failed",
-                    detail: "{\"event\":\"connection_check_failed\",\"detail\":\"\(error.localizedDescription)\"}",
-                    isError: true
-                ))
-                if !silent {
-                    self.alertMessage = error.localizedDescription
-                }
-            }
-        }
+        mfiSigner != nil && !snapshot.isRunning
     }
 
     // MARK: - Location Injection Session
 
     public func start(mode: SessionMode) {
-        if isUnsupportedIPad {
-            alertMessage = Self.unsupportedIPadMessage
-            return
-        }
         guard !snapshot.isRunning else { return }
-        guard let pairing = savedPairing else {
-            alertMessage = "请先在「设备连接」页面完成本机配对或导入配对文件，并确保外部代理已启用 10.7.0.1 回环映射。"
-            return
-        }
         guard let mfiSigner else {
-            alertMessage = "内置配件认证组件不可用，请重新安装应用。"
+            alertMessage = L10n.tr("error.mfi_unavailable")
             return
         }
 
@@ -711,10 +676,6 @@ public final class RelocViewModel: ObservableObject {
         }
 
         let config = SessionConfiguration(
-            host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-            remotePort: remotePort,
-            lockdownPort: lockdownPort,
-            serviceName: serviceName.trimmingCharacters(in: .whitespacesAndNewlines),
             mode: mode,
             intervalSeconds: intervalSeconds,
             durationSeconds: mode == .probe ? max(20.0, durationSeconds) : durationSeconds
@@ -724,6 +685,7 @@ public final class RelocViewModel: ObservableObject {
         needsLocationServiceRefresh = false
         isLocationRefreshGuideActive = false
         didAutoReconnectForSubscription = false
+        didAutoSoftReconnectForCurrentTarget = false
         loggedReducedAccuracyForSession = false
         cancelRestoreRecovery()
         injectionPhase = .connecting
@@ -765,7 +727,7 @@ public final class RelocViewModel: ObservableObject {
                         self.injectionPhase = .idle
                         if self.isLocationRefreshGuideActive {
                             self.isLocationRefreshGuideActive = false
-                            PairingPiPPresenter.shared.finishLocationRefresh(succeeded: false, message: "定位会话已停止")
+                            LocationRefreshPresenter.shared.finishLocationRefresh(succeeded: false, message: L10n.tr("pip.finish.stopped.message"))
                         }
                     }
                 }
@@ -793,22 +755,12 @@ public final class RelocViewModel: ObservableObject {
                     guard let self, self.session?.id == sessionID else { return }
                     self.keepAlive.refreshAfterLocationToggle()
                 }
-            },
-            onDiscoveredPort: { [weak self] port in
-                Task { @MainActor in
-                    guard let self, self.session?.id == sessionID else { return }
-                    self.discoveredDevicePort = port
-                }
             }
         )
         newSession.setFallbackRealLocation(lastKnownRealLocation)
         self.session = newSession
-        newSession.start(
-            configuration: config,
-            pairing: pairing,
-            discoveredRemotePort: discoveredDevicePort,
-            mfiSigner: mfiSigner
-        )
+        snapshot.isRunning = true
+        newSession.start(configuration: config, mfiSigner: mfiSigner)
     }
 
     public func stopAndRestore() {
@@ -825,7 +777,7 @@ public final class RelocViewModel: ObservableObject {
         injectionPhase = .idle
         if isLocationRefreshGuideActive {
             isLocationRefreshGuideActive = false
-            PairingPiPPresenter.shared.teardown()
+            LocationRefreshPresenter.shared.teardown()
         }
         store.saveInterruptedSession(nil)
         interruptedSession = nil
@@ -842,7 +794,7 @@ public final class RelocViewModel: ObservableObject {
         realLocationRestoredNotice = false
         if isRestoreRefreshGuideActive {
             isRestoreRefreshGuideActive = false
-            PairingPiPPresenter.shared.teardown()
+            LocationRefreshPresenter.shared.teardown()
         }
     }
 
@@ -902,10 +854,10 @@ public final class RelocViewModel: ObservableObject {
                       (status == .authorizedAlways || status == .authorizedWhenInUse) {
                 refreshCountdownTask?.cancel()
                 refreshCountdownTask = nil
-                PairingPiPPresenter.shared.updateLocationRefresh(
+                LocationRefreshPresenter.shared.updateLocationRefresh(
                     step: 3,
-                    headline: "③ 系统已重新打开定位服务",
-                    subtitle: "正在极速锁定外设 GPS，请稍候 1–2 秒…"
+                    headline: L10n.tr("pip.step3.reopened.headline"),
+                    subtitle: L10n.tr("pip.step3.reopened.subtitle")
                 )
             }
             return
@@ -920,10 +872,10 @@ public final class RelocViewModel: ObservableObject {
             && (status == .authorizedAlways || status == .authorizedWhenInUse) {
             refreshCountdownTask?.cancel()
             refreshCountdownTask = nil
-            PairingPiPPresenter.shared.updateLocationRefresh(
+            LocationRefreshPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 正在重新获取本机真实定位…",
-                subtitle: "已重新打开定位服务，请稍候 1–2 秒"
+                headline: L10n.tr("pip.step3.restoring.headline"),
+                subtitle: L10n.tr("pip.step3.restoring.subtitle")
             )
             coreLocation.requestAndStart()
             coreLocation.pulseForAccessoryLock(requestSingleFix: true)
@@ -938,11 +890,11 @@ public final class RelocViewModel: ObservableObject {
         isRestoreRefreshGuideActive = true
         isRestoringRealLocation = true
         lastRestoreAuthStatus = coreLocation.authorizationStatus
-        PairingPiPPresenter.shared.startLocationRefreshGuide()
-        PairingPiPPresenter.shared.updateLocationRefresh(
+        LocationRefreshPresenter.shared.startLocationRefreshGuide()
+        LocationRefreshPresenter.shared.updateLocationRefresh(
             step: 1,
-            headline: "① 关闭系统「定位服务」",
-            subtitle: "清空外设残留缓存，关闭后自动开始 5 秒倒计时"
+            headline: L10n.tr("pip.step1.headline"),
+            subtitle: L10n.tr("pip.step1.restore.subtitle")
         )
         // Let PiP enter smoothly before switching apps to Settings (avoids transition stutter).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
@@ -954,22 +906,22 @@ public final class RelocViewModel: ObservableObject {
     private func startRestoreRefreshCountdown() {
         refreshCountdownTask?.cancel()
         refreshCountdownTask = Task { @MainActor [weak self] in
-            for remaining in stride(from: 5, through: 1, by: -1) {
+            for remaining in stride(from: 7, through: 1, by: -1) {
                 guard !Task.isCancelled, let self, self.isRestoreRefreshGuideActive else { return }
-                PairingPiPPresenter.shared.updateLocationRefresh(
+                LocationRefreshPresenter.shared.updateLocationRefresh(
                     step: 2,
-                    headline: "② 正在清空外设残留缓存",
-                    subtitle: "请保持「定位服务」关闭，等待倒计时结束",
+                    headline: L10n.tr("pip.step2.restore.headline"),
+                    subtitle: L10n.tr("pip.step2.subtitle"),
                     countdown: remaining
                 )
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
             guard !Task.isCancelled, let self, self.isRestoreRefreshGuideActive else { return }
             RelocTheme.hapticMedium()
-            PairingPiPPresenter.shared.updateLocationRefresh(
+            LocationRefreshPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 请重新打开「定位服务」",
-                subtitle: "打开开关后将立即切回本机真实 GPS",
+                headline: L10n.tr("pip.step3.enable.headline"),
+                subtitle: L10n.tr("pip.step3.restore.subtitle"),
                 countdown: 0
             )
         }
@@ -1049,10 +1001,10 @@ public final class RelocViewModel: ObservableObject {
             if locationRefreshSawDisabled {
                 refreshCountdownTask?.cancel()
                 refreshCountdownTask = nil
-                PairingPiPPresenter.shared.updateLocationRefresh(
+                LocationRefreshPresenter.shared.updateLocationRefresh(
                     step: 3,
-                    headline: "③ 系统已重新订阅外设 GPS",
-                    subtitle: "正在极速锁定目标坐标，请稍候 1–2 秒…"
+                    headline: L10n.tr("pip.step3.subscribed.headline"),
+                    subtitle: L10n.tr("pip.step3.subscribed.subtitle")
                 )
             }
             // Do not schedule CoreLocation pulses while the PiP refresh guide is active.
@@ -1100,17 +1052,24 @@ public final class RelocViewModel: ObservableObject {
                 self.coreLocation.nudgeForAccessoryLock()
             }
 
-            // Stage 2 (4.5s): automatic zero-click iAP2 RST soft-reconnect to force `locationd` re-acquisition.
+            // Stage 2 (4.5s): at most ONE automatic zero-click iAP2 RST soft-reconnect per target.
+            // Without this guard, re-subscribing after reconnect would loop soft-reconnect every 4.5s forever.
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             guard !Task.isCancelled, self.snapshot.isRunning else { return }
             if !self.isAccessoryLocationConfirmed {
-                self.events.append(ProtocolEvent(
-                    name: "auto_soft_reconnect",
-                    detail: "{\"event\":\"auto_soft_reconnect\"}"
-                ))
-                self.session?.requestLinkReconnect(reason: "auto_soft_reconnect")
-                self.keepAlive.nudgeLocationSubscription()
-                self.coreLocation.nudgeForAccessoryLock()
+                if !self.didAutoSoftReconnectForCurrentTarget {
+                    self.didAutoSoftReconnectForCurrentTarget = true
+                    self.events.append(ProtocolEvent(
+                        name: "auto_soft_reconnect",
+                        detail: "{\"event\":\"auto_soft_reconnect\"}"
+                    ))
+                    self.session?.requestLinkReconnect(reason: "auto_soft_reconnect")
+                    self.keepAlive.nudgeLocationSubscription()
+                    self.coreLocation.nudgeForAccessoryLock()
+                } else {
+                    self.needsLocationServiceRefresh = true
+                    return
+                }
             }
 
             // Stage 3 (8.5s): surface manual 1-tap refresh banner only if zero-click recovery still hasn't locked.
@@ -1148,10 +1107,10 @@ public final class RelocViewModel: ObservableObject {
                     isRestoreRefreshGuideActive = false
                     refreshCountdownTask?.cancel()
                     refreshCountdownTask = nil
-                    PairingPiPPresenter.shared.finishLocationRefresh(
+                    LocationRefreshPresenter.shared.finishLocationRefresh(
                         succeeded: true,
-                        message: "已切回本机真实 GPS，可返回任意 App 使用",
-                        headline: "本机真实定位已恢复"
+                        message: L10n.tr("pip.finish.restored.message"),
+                        headline: L10n.tr("pip.finish.restored.headline")
                     )
                 }
                 Task { @MainActor [weak self] in
@@ -1182,6 +1141,7 @@ public final class RelocViewModel: ObservableObject {
         let confirmed = (telemetry.isProducedByAccessory == true) && distance < 500.0
 
         if confirmed != isAccessoryLocationConfirmed {
+            let wasConfirmed = isAccessoryLocationConfirmed
             isAccessoryLocationConfirmed = confirmed
             session?.markCoreLocationConfirmed(confirmed)
             if confirmed {
@@ -1191,18 +1151,28 @@ public final class RelocViewModel: ObservableObject {
                 RelocTheme.hapticSuccess()
                 events.append(ProtocolEvent(
                     name: "accessory_location_confirmed",
-                    detail: String(format: "{\"event\":\"accessory_location_confirmed\",\"distance_m\":%.1f,\"accuracy_m\":%.1f}", distance, telemetry.horizontalAccuracy)
+                    detail: String(format: "{\"event\":\"accessory_location_confirmed\",\"distance_m\":%.1f,\"accuracy_m\":%.1f,\"alt_m\":%.1f}", distance, telemetry.horizontalAccuracy, telemetry.altitude)
                 ))
                 if isLocationRefreshGuideActive {
                     isLocationRefreshGuideActive = false
                     refreshCountdownTask?.cancel()
                     refreshCountdownTask = nil
                     keepAlive.restoreAudioPreferenceAfterSettingsToggle()
-                    PairingPiPPresenter.shared.finishLocationRefresh(
+                    LocationRefreshPresenter.shared.finishLocationRefresh(
                         succeeded: true,
-                        message: "已锁定「\(selectedPlaceName)」，可返回任意 App 使用"
+                        message: L10n.format("pip.finish.succeeded.message", selectedPlaceName)
                     )
                 }
+            } else if wasConfirmed && !isLocationRefreshGuideActive && !snapshot.activeSentences.isEmpty {
+                // Mid-session lock drift: actively re-burst and nudge so `locationd` re-locks promptly.
+                events.append(ProtocolEvent(
+                    name: "accessory_lock_lost",
+                    detail: String(format: "{\"event\":\"accessory_lock_lost\",\"distance_m\":%.1f}", distance)
+                ))
+                session?.triggerFastBurst(seconds: 12.0)
+                keepAlive.nudgeLocationSubscription()
+                coreLocation.nudgeForAccessoryLock()
+                scheduleLockWatchdog()
             }
             updateInjectionPhase()
         }
@@ -1237,8 +1207,8 @@ public final class RelocViewModel: ObservableObject {
         isLocationRefreshGuideActive = true
         locationRefreshSawDisabled = false
         lastRestoreAuthStatus = coreLocation.authorizationStatus
-        PairingPiPPresenter.shared.startLocationRefreshGuide()
-        session?.triggerFastBurst(seconds: 30.0)
+        LocationRefreshPresenter.shared.startLocationRefreshGuide()
+        session?.triggerFastBurst(seconds: 45.0)
         // Wait briefly for PiP to enter smoothly before switching to Settings (prevents stutter).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self, self.isLocationRefreshGuideActive, self.snapshot.isRunning else { return }
@@ -1250,6 +1220,7 @@ public final class RelocViewModel: ObservableObject {
     public func retryAutoLock() {
         guard snapshot.isRunning else { return }
         needsLocationServiceRefresh = false
+        didAutoSoftReconnectForCurrentTarget = true
         session?.triggerFastBurst(seconds: 15.0)
         if snapshot.activeSentences.isEmpty {
             keepAlive.pulseLocationSubscription()
@@ -1266,22 +1237,22 @@ public final class RelocViewModel: ObservableObject {
     private func startLocationRefreshCountdown() {
         refreshCountdownTask?.cancel()
         refreshCountdownTask = Task { @MainActor [weak self] in
-            for remaining in stride(from: 5, through: 1, by: -1) {
+            for remaining in stride(from: 7, through: 1, by: -1) {
                 guard !Task.isCancelled, let self, self.isLocationRefreshGuideActive else { return }
-                PairingPiPPresenter.shared.updateLocationRefresh(
+                LocationRefreshPresenter.shared.updateLocationRefresh(
                     step: 2,
-                    headline: "② 正在清空系统定位缓存",
-                    subtitle: "请保持「定位服务」关闭，等待倒计时结束",
+                    headline: L10n.tr("pip.step2.headline"),
+                    subtitle: L10n.tr("pip.step2.subtitle"),
                     countdown: remaining
                 )
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
             guard !Task.isCancelled, let self, self.isLocationRefreshGuideActive else { return }
             RelocTheme.hapticMedium()
-            PairingPiPPresenter.shared.updateLocationRefresh(
+            LocationRefreshPresenter.shared.updateLocationRefresh(
                 step: 3,
-                headline: "③ 请重新打开「定位服务」",
-                subtitle: "打开开关后 Reloc 将自动 100% 锁定外设 GPS",
+                headline: L10n.tr("pip.step3.enable.headline"),
+                subtitle: L10n.tr("pip.step3.enable.subtitle"),
                 countdown: 0
             )
         }
@@ -1313,32 +1284,7 @@ public final class RelocViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Pairing & Places Management
-
-    public func reloadPairing() {
-        let (pairing, pairStat) = store.loadPairing()
-        self.savedPairing = pairing
-        self.pairingStatus = pairStat
-        self.deviceUDID = store.deviceUDID
-    }
-
-    public func importPairingFile(url: URL) {
-        do {
-            _ = try store.importPairingFile(from: url)
-            reloadPairing()
-            invalidateDeviceConnection()
-            events.append(ProtocolEvent(name: "pairing_imported", detail: "{\"event\":\"pairing_imported\"}"))
-            testConnection(silent: true)
-        } catch {
-            alertMessage = "配对文件导入失败：\(error.localizedDescription)"
-        }
-    }
-
-    public func removePairingFile() {
-        store.removePairingFile()
-        reloadPairing()
-        invalidateDeviceConnection()
-    }
+    // MARK: - Places Management
 
     public func toggleFavoriteForInspected() {
         let loc = inspectedLocation
