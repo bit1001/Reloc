@@ -156,7 +156,6 @@ public final class CredentialStore {
         static let interval = "reloc.interval"
         static let duration = "reloc.duration"
         static let gcj02Correction = "reloc.gcj02Correction"
-        static let backgroundKeepAlive = "reloc.backgroundKeepAlive"
         static let microJitter = "reloc.microJitter"
         static let appearance = "reloc.appearance"
         static let language = L10n.languageDefaultsKey
@@ -164,6 +163,11 @@ public final class CredentialStore {
         static let mapSource = "reloc.mapSource"
         static let favorites = "reloc.favorites"
         static let recents = "reloc.recents"
+        static let savedRoutes = "reloc.savedRoutes"
+        static let routePreset = "reloc.routePreset"
+        static let routeSpeed = "reloc.routeSpeed"
+        static let routeLoopMode = "reloc.routeLoopMode"
+        static let routeRealisticMotion = "reloc.routeRealisticMotion"
         static let interruptedSession = "reloc.interruptedSession"
         static let lastLatitude = "reloc.lastLat"
         static let lastLongitude = "reloc.lastLon"
@@ -189,14 +193,6 @@ public final class CredentialStore {
             return defaults.bool(forKey: Keys.gcj02Correction)
         }
         set { defaults.set(newValue, forKey: Keys.gcj02Correction) }
-    }
-
-    public var backgroundKeepAliveEnabled: Bool {
-        get {
-            if defaults.object(forKey: Keys.backgroundKeepAlive) == nil { return true }
-            return defaults.bool(forKey: Keys.backgroundKeepAlive)
-        }
-        set { defaults.set(newValue, forKey: Keys.backgroundKeepAlive) }
     }
 
     public var microJitterEnabled: Bool {
@@ -242,15 +238,82 @@ public final class CredentialStore {
         }
     }
 
+    // MARK: - Trajectory Settings & Saved Routes
+
+    public var routePreset: RouteTransportPreset {
+        get { defaults.string(forKey: Keys.routePreset).flatMap(RouteTransportPreset.init) ?? .walking }
+        set { defaults.set(newValue.rawValue, forKey: Keys.routePreset) }
+    }
+
+    public var routeSpeedMps: Double {
+        get {
+            let v = defaults.double(forKey: Keys.routeSpeed)
+            return v >= 0.3 ? v : routePreset.defaultSpeedMps
+        }
+        set { defaults.set(max(0.3, newValue), forKey: Keys.routeSpeed) }
+    }
+
+    public var routeLoopMode: RouteLoopMode {
+        get { defaults.string(forKey: Keys.routeLoopMode).flatMap(RouteLoopMode.init) ?? .once }
+        set { defaults.set(newValue.rawValue, forKey: Keys.routeLoopMode) }
+    }
+
+    public var routeRealisticMotionEnabled: Bool {
+        get {
+            if defaults.object(forKey: Keys.routeRealisticMotion) == nil { return true }
+            return defaults.bool(forKey: Keys.routeRealisticMotion)
+        }
+        set { defaults.set(newValue, forKey: Keys.routeRealisticMotion) }
+    }
+
+    public func loadSavedRoutes() -> [SavedRoute] {
+        guard let data = defaults.data(forKey: Keys.savedRoutes),
+              let decoded = try? JSONDecoder().decode([SavedRoute].self, from: data) else {
+            return []
+        }
+        return decoded
+    }
+
+    public func saveSavedRoutes(_ routes: [SavedRoute]) {
+        if let encoded = try? JSONEncoder().encode(routes) {
+            defaults.set(encoded, forKey: Keys.savedRoutes)
+        }
+    }
+
     // MARK: - Favorites, Recents (max 30), and Interrupted Session Recovery
+
+    private static let starterAppleParkID = UUID(uuidString: "10000000-0000-4000-8000-000000000001")!
+    private static let starterTokyoStationID = UUID(uuidString: "10000000-0000-4000-8000-000000000002")!
+    private static let starterTaipei101ID = UUID(uuidString: "10000000-0000-4000-8000-000000000003")!
 
     public func loadFavorites() -> [FavoriteLocation] {
         guard let data = defaults.data(forKey: Keys.favorites),
               let decoded = try? JSONDecoder().decode([FavoriteLocation].self, from: data) else {
             return [
-                FavoriteLocation(name: "Apple Park", subtitle: "Cupertino, CA", latitude: 37.334606, longitude: -122.009102, altitude: 20.0),
-                FavoriteLocation(name: L10n.tr("favorite.tokyo_station.name"), subtitle: L10n.tr("favorite.tokyo_station.subtitle"), latitude: 35.681236, longitude: 139.767125, altitude: 10.0),
-                FavoriteLocation(name: L10n.tr("favorite.taipei_101.name"), subtitle: L10n.tr("favorite.taipei_101.subtitle"), latitude: 25.033964, longitude: 121.564468, altitude: 12.0),
+                FavoriteLocation(
+                    id: Self.starterAppleParkID,
+                    name: "Apple Park",
+                    subtitle: "Cupertino, CA",
+                    latitude: 37.334606,
+                    longitude: -122.009102,
+                    altitude: 20.0
+                ),
+                FavoriteLocation(
+                    id: Self.starterTokyoStationID,
+                    name: L10n.tr("favorite.tokyo_station.name"),
+                    subtitle: L10n.tr("favorite.tokyo_station.subtitle"),
+                    latitude: 35.681236,
+                    longitude: 139.767125,
+                    altitude: 10.0
+                ),
+                FavoriteLocation(
+                    id: Self.starterTaipei101ID,
+                    name: L10n.tr("favorite.taipei_101.name"),
+                    subtitle: L10n.tr("favorite.taipei_101.subtitle"),
+                    latitude: 25.033964,
+                    longitude: 121.564468,
+                    altitude: 12.0
+                ),
             ]
         }
         return decoded

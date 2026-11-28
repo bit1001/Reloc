@@ -18,7 +18,13 @@ struct MapPickerView: View {
     @State private var showManualCoordinate = false
     @State private var showPlacesSheet = false
     @State private var showStopConfirm = false
+    @State private var showSaveRouteAlert = false
+    @State private var saveRouteName = ""
     @State private var copiedAddressToast = false
+
+    private var isRouteMode: Bool {
+        viewModel.controlMode == .route || viewModel.isRouteSessionActive
+    }
 
     private var hasSearchDropdown: Bool {
         !searchResults.isEmpty
@@ -53,7 +59,10 @@ struct MapPickerView: View {
                 WebMercatorMapView(
                     activeCoordinate: viewModel.activeMapCoordinate,
                     isSessionRunning: viewModel.snapshot.isRunning,
-                    pendingCoordinate: viewModel.pendingMapCoordinate,
+                    pendingCoordinate: isRouteMode ? nil : viewModel.pendingMapCoordinate,
+                    routePolyline: viewModel.routeMapPolylineCoordinates,
+                    routeWaypoints: viewModel.routeMapWaypointCoordinates,
+                    showActivePin: !isRouteMode || viewModel.isRouteSessionActive,
                     mapSource: viewModel.mapSource,
                     cameraTarget: $cameraTarget,
                     onTapCoordinate: { coord in
@@ -68,7 +77,10 @@ struct MapPickerView: View {
                 InteractiveMKMapView(
                     activeCoordinate: viewModel.activeMapCoordinate,
                     isSessionRunning: viewModel.snapshot.isRunning,
-                    pendingCoordinate: viewModel.pendingMapCoordinate,
+                    pendingCoordinate: isRouteMode ? nil : viewModel.pendingMapCoordinate,
+                    routePolyline: viewModel.routeMapPolylineCoordinates,
+                    routeWaypoints: viewModel.routeMapWaypointCoordinates,
+                    showActivePin: !isRouteMode || viewModel.isRouteSessionActive,
                     mapStyle: viewModel.mapStyle,
                     cameraTarget: $cameraTarget,
                     onTapCoordinate: { coord in
@@ -89,7 +101,11 @@ struct MapPickerView: View {
                     rightControlDock
                 }
 
-                fixedLocationCard
+                if isRouteMode {
+                    routeControlCard
+                } else {
+                    fixedLocationCard
+                }
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
@@ -112,10 +128,10 @@ struct MapPickerView: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .toolbarBackground(.hidden, for: .tabBar)
-        .onChange(of: searchText) { _, newValue in
+        .relocOnChange(of: searchText) { newValue in
             handleSearchTextChange(newValue)
         }
-        .onChange(of: isSearchFocused) { _, focused in
+        .relocOnChange(of: isSearchFocused) { focused in
             if focused {
                 let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty, searchCompleter.suggestions.isEmpty, searchResults.isEmpty {
@@ -142,6 +158,19 @@ struct MapPickerView: View {
         } message: {
             Text(L10n.tr("map.stop_confirm.message"))
         }
+        .alert(L10n.tr("route.save.title"), isPresented: $showSaveRouteAlert) {
+            TextField(L10n.tr("route.save.placeholder"), text: $saveRouteName)
+            Button(L10n.tr("common.cancel"), role: .cancel) {
+                saveRouteName = ""
+            }
+            Button(L10n.tr("common.save")) {
+                viewModel.saveCurrentRoute(name: saveRouteName)
+                saveRouteName = ""
+                RelocTheme.hapticSuccess()
+            }
+        } message: {
+            Text(L10n.tr("route.save.message"))
+        }
     }
 
     // MARK: - Top Search Bar & Status Row
@@ -163,7 +192,10 @@ struct MapPickerView: View {
             }
             .buttonStyle(.plain)
 
-            TextField(L10n.tr("map.search.placeholder"), text: $searchText)
+            TextField(
+                isRouteMode ? L10n.tr("route.search.placeholder") : L10n.tr("map.search.placeholder"),
+                text: $searchText
+            )
                 .font(.subheadline)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -251,19 +283,58 @@ struct MapPickerView: View {
             Spacer()
 
             if viewModel.snapshot.isRunning {
+                let live = viewModel.currentLiveCoordinateSummary
                 HStack(spacing: 5) {
-                    Image(systemName: "location.fill")
+                    Image(systemName: viewModel.isRouteSessionActive ? viewModel.routePreset.systemImage : "location.fill")
                         .font(.caption2)
                         .foregroundStyle(RelocTheme.emerald)
-                    Text(String(format: "%.4f, %.4f · %.0fm", viewModel.targetLocation.latitude, viewModel.targetLocation.longitude, viewModel.targetLocation.altitude))
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    if viewModel.isRouteSessionActive, let prog = viewModel.trajectoryProgress {
+                        Text("\(RouteGeometry.formatSpeedKmh(prog.currentSpeedMps)) · \(Int((prog.progress * 100).rounded()))%")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    } else {
+                        Text(String(format: "%.4f, %.4f · %.0fm", live.latitude, live.longitude, live.altitude))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(.regularMaterial, in: Capsule())
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.7))
+            } else {
+                modeTogglePill
             }
         }
+    }
+
+    private var modeTogglePill: some View {
+        HStack(spacing: 2) {
+            ForEach(LocationControlMode.allCases) { mode in
+                let selected = viewModel.controlMode == mode
+                Button {
+                    guard viewModel.controlMode != mode else { return }
+                    RelocTheme.hapticLight()
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        viewModel.controlMode = mode
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode == .fixed ? "mappin.circle.fill" : "point.filled.topleft.down.curvedto.point.bottomright.up")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(mode.title)
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5.5)
+                    .background(selected ? RelocTheme.accent : Color.clear, in: Capsule())
+                    .foregroundStyle(selected ? .white : .primary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
     }
 
     private var rightControlDock: some View {
@@ -576,8 +647,14 @@ struct MapPickerView: View {
                                     ProgressView().controlSize(.mini)
                                     Text(L10n.tr("map.altitude.resolving"))
                                 } else {
-                                    Image(systemName: "mountain.2.fill")
-                                        .font(.system(size: 9, weight: .semibold))
+                                    Group {
+                                        if #available(iOS 16.1, *) {
+                                            Image(systemName: "mountain.2.fill")
+                                        } else {
+                                            Image(systemName: "arrow.up.and.down")
+                                        }
+                                    }
+                                    .font(.system(size: 9, weight: .semibold))
                                     Text(L10n.format("map.altitude.value", viewModel.inspectedLocation.altitude))
                                         .monospacedDigit()
                                 }
@@ -715,6 +792,372 @@ struct MapPickerView: View {
         }
     }
 
+    // MARK: - Bottom Trajectory / Route Control Card
+
+    private var routeControlCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sheetGrabber
+
+            // Header: Route title, stats & quick edit buttons
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill((viewModel.isRouteSessionActive ? RelocTheme.emerald : RelocTheme.accent).opacity(0.16))
+                        .frame(width: 40, height: 40)
+                    if viewModel.isPlanningRoute {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: viewModel.isRouteSessionActive ? viewModel.routePreset.systemImage : "point.filled.topleft.down.curvedto.point.bottomright.up")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(viewModel.isRouteSessionActive ? RelocTheme.emerald : RelocTheme.accent)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(routeHeaderTitle)
+                        .font(.subheadline.weight(.bold))
+                        .lineLimit(1)
+                    Text(routeHeaderSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                if !viewModel.isRouteSessionActive && !viewModel.routeWaypoints.isEmpty {
+                    HStack(spacing: 6) {
+                        routeMiniIconButton("arrow.uturn.backward") {
+                            viewModel.undoLastRouteWaypoint()
+                        }
+                        if viewModel.routeWaypoints.count >= 2 {
+                            routeMiniIconButton("arrow.up.arrow.down") {
+                                viewModel.reverseRouteWaypoints()
+                            }
+                        }
+                        if viewModel.plannedRoutePoints.count >= 2 && !viewModel.isPlanningRoute {
+                            routeMiniIconButton("bookmark") {
+                                saveRouteName = defaultRouteSaveName
+                                showSaveRouteAlert = true
+                            }
+                        }
+                        routeMiniIconButton("trash", tint: RelocTheme.crimson) {
+                            viewModel.clearRoute()
+                        }
+                    }
+                }
+            }
+
+            if let notice = viewModel.routePlanningNotice, !viewModel.isRouteSessionActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(RelocTheme.amber)
+                    Text(notice)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            if viewModel.isRouteSessionActive, let prog = viewModel.trajectoryProgress {
+                // Live trajectory progress & speed control
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: prog.progress)
+                        .tint(prog.isPaused ? RelocTheme.amber : RelocTheme.emerald)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "speedometer")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(RelocTheme.accent)
+                        Text(liveSpeedLabel(prog.currentSpeedMps))
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Slider(
+                            value: $viewModel.routeSpeedMps,
+                            in: viewModel.routePreset.speedRangeMps,
+                            step: viewModel.routePreset.speedStepMps
+                        )
+                        .tint(RelocTheme.accent)
+                    }
+                }
+            } else {
+                // 4 Transport Presets
+                HStack(spacing: 6) {
+                    ForEach(RouteTransportPreset.allCases) { preset in
+                        let selected = viewModel.routePreset == preset
+                        Button {
+                            RelocTheme.hapticLight()
+                            viewModel.routePreset = preset
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: preset.systemImage)
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(preset.title)
+                                    .font(.caption2.weight(.semibold))
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6.5)
+                            .background(selected ? RelocTheme.accent : Color.secondary.opacity(0.12), in: Capsule())
+                            .foregroundStyle(selected ? .white : .primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                // Speed Slider + Pace/km/h readout
+                VStack(spacing: 2) {
+                    HStack {
+                        Text(L10n.tr("route.speed.label"))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(configuredSpeedLabel)
+                            .font(.caption2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(RelocTheme.accent)
+                    }
+                    Slider(
+                        value: $viewModel.routeSpeedMps,
+                        in: viewModel.routePreset.speedRangeMps,
+                        step: viewModel.routePreset.speedStepMps
+                    )
+                    .tint(RelocTheme.accent)
+                }
+
+                // Loop Mode + Realistic Motion toggle
+                HStack(spacing: 6) {
+                    ForEach(RouteLoopMode.allCases) { loop in
+                        let selected = viewModel.routeLoopMode == loop
+                        Button {
+                            RelocTheme.hapticLight()
+                            viewModel.routeLoopMode = loop
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: loop.systemImage)
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text(loop.title)
+                                    .font(.caption2.weight(.semibold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5.5)
+                            .background(selected ? RelocTheme.accent.opacity(0.16) : Color.secondary.opacity(0.10), in: Capsule())
+                            .foregroundStyle(selected ? RelocTheme.accent : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Spacer(minLength: 2)
+
+                    Button {
+                        RelocTheme.hapticLight()
+                        viewModel.routeRealisticMotionEnabled.toggle()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "waveform.path")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(L10n.tr("route.realistic.short"))
+                                .font(.caption2.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5.5)
+                        .background(
+                            viewModel.routeRealisticMotionEnabled ? RelocTheme.emerald.opacity(0.16) : Color.secondary.opacity(0.10),
+                            in: Capsule()
+                        )
+                        .foregroundStyle(viewModel.routeRealisticMotionEnabled ? RelocTheme.emerald : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Shared permission / live / restore / error banners
+            if viewModel.locationAuthorizationStatus == .denied || viewModel.locationAuthorizationStatus == .restricted {
+                HStack(spacing: 8) {
+                    Image(systemName: "location.slash.fill").foregroundStyle(RelocTheme.crimson)
+                    Text(L10n.tr("map.permission.denied")).font(.caption.weight(.semibold))
+                    Spacer()
+                    Button(L10n.tr("common.enable")) {
+                        viewModel.openAppSettings()
+                    }
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RelocTheme.crimson, in: Capsule())
+                    .foregroundStyle(.white)
+                }
+                .padding(10)
+                .background(RelocTheme.crimson.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if viewModel.isLocationReducedAccuracy {
+                HStack(spacing: 8) {
+                    Image(systemName: "scope").foregroundStyle(RelocTheme.amber)
+                    Text(L10n.tr("map.permission.reduced")).font(.caption.weight(.semibold))
+                    Spacer()
+                    Button(L10n.tr("common.enable")) {
+                        viewModel.openAppSettings()
+                    }
+                    .font(.caption.weight(.bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RelocTheme.amber, in: Capsule())
+                    .foregroundStyle(.white)
+                }
+                .padding(10)
+                .background(RelocTheme.amber.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if viewModel.snapshot.isRunning {
+                liveTriggerStatusBanner
+            } else if viewModel.isRestoringRealLocation {
+                restoreLocationStatusBanner
+            } else if viewModel.realLocationRestoredNotice {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(RelocTheme.emerald)
+                    Text(L10n.tr("map.restored.notice"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(RelocTheme.emerald)
+                    Spacer()
+                }
+                .padding(10)
+                .background(RelocTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if let err = viewModel.snapshot.lastError {
+                Text(L10n.format("map.last_error", err))
+                    .font(.caption)
+                    .foregroundStyle(RelocTheme.crimson)
+                    .lineLimit(2)
+            }
+
+            // Primary Action CTA
+            HStack(spacing: 10) {
+                if viewModel.isRouteSessionActive {
+                    let isPaused = viewModel.trajectoryProgress?.isPaused ?? false
+                    RelocPrimaryButton(
+                        title: isPaused ? L10n.tr("route.button.resume") : L10n.tr("route.button.pause"),
+                        systemImage: isPaused ? "play.fill" : "pause.fill",
+                        gradient: isPaused ? RelocTheme.emeraldGradient : LinearGradient(colors: [RelocTheme.amber, Color(red: 0.85, green: 0.48, blue: 0.08)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    ) {
+                        viewModel.toggleTrajectoryPause()
+                    }
+                    RelocPrimaryButton(
+                        title: L10n.tr("map.button.stop_restore"),
+                        systemImage: "stop.fill",
+                        gradient: RelocTheme.crimsonGradient
+                    ) {
+                        showStopConfirm = true
+                    }
+                } else {
+                    RelocPrimaryButton(
+                        title: L10n.tr("route.button.start"),
+                        systemImage: "play.fill",
+                        gradient: RelocTheme.emeraldGradient,
+                        disabled: !viewModel.canStartRouteSession
+                    ) {
+                        viewModel.startRouteSession()
+                    }
+                }
+            }
+        }
+        .relocGlassCard(cornerRadius: 24, padding: 14)
+        .background {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color.clear)
+                .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .onTapGesture {}
+        }
+    }
+
+    private func routeMiniIconButton(_ systemName: String, tint: Color = .secondary, action: @escaping () -> Void) -> some View {
+        Button {
+            RelocTheme.hapticLight()
+            action()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(Color.secondary.opacity(0.12), in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var defaultRouteSaveName: String {
+        if let first = viewModel.routeWaypoints.first?.name,
+           let last = viewModel.routeWaypoints.last?.name,
+           first != last {
+            return "\(first) → \(last)"
+        }
+        return "\(viewModel.routePreset.title) \(RouteGeometry.formatDistance(viewModel.plannedRouteDistanceMeters))"
+    }
+
+    private var routeHeaderTitle: String {
+        if viewModel.isRouteSessionActive, let prog = viewModel.trajectoryProgress {
+            if prog.isCompleted {
+                return L10n.tr("route.status.completed")
+            } else if prog.isPaused {
+                return L10n.tr("route.status.paused")
+            } else if prog.isWaitingForStartLock {
+                return prog.traveledMeters > 1.0
+                    ? L10n.tr("route.status.waiting_relock")
+                    : L10n.tr("route.status.waiting_lock")
+            } else if viewModel.routeLoopMode != .once {
+                return L10n.format("route.status.moving_lap", prog.lapCount)
+            } else {
+                return L10n.tr("route.status.moving")
+            }
+        }
+        if viewModel.isPlanningRoute {
+            return L10n.tr("route.planning.calculating")
+        }
+        switch viewModel.routeWaypoints.count {
+        case 0:
+            return L10n.tr("route.planning.empty_title")
+        case 1:
+            return L10n.tr("route.planning.need_end_title")
+        default:
+            return L10n.format("route.planning.ready_title", RouteGeometry.formatDistance(viewModel.plannedRouteDistanceMeters))
+        }
+    }
+
+    private var routeHeaderSubtitle: String {
+        if viewModel.isRouteSessionActive, let prog = viewModel.trajectoryProgress {
+            let traveled = RouteGeometry.formatDistance(prog.traveledMeters)
+            let total = RouteGeometry.formatDistance(prog.totalDistanceMeters)
+            let pct = Int((prog.progress * 100).rounded())
+            let remainingMeters = prog.isReversing ? prog.traveledMeters : max(0, prog.totalDistanceMeters - prog.traveledMeters)
+            let speedForETA = max(prog.currentSpeedMps, viewModel.routeSpeedMps)
+            let eta = prog.isCompleted ? L10n.tr("route.eta.done") : RouteGeometry.formatETA(seconds: remainingMeters / max(0.3, speedForETA))
+            return "\(traveled) / \(total) · \(pct)% · ETA \(eta)"
+        }
+        switch viewModel.routeWaypoints.count {
+        case 0:
+            return L10n.tr("route.planning.empty_subtitle")
+        case 1:
+            return L10n.format("route.planning.start_selected", viewModel.routeWaypoints[0].name)
+        default:
+            let eta = RouteGeometry.formatETA(seconds: viewModel.plannedRouteDistanceMeters / max(0.3, viewModel.routeSpeedMps))
+            return L10n.format("route.planning.ready_subtitle", viewModel.routeWaypoints.count, eta)
+        }
+    }
+
+    private var configuredSpeedLabel: String {
+        let mps = viewModel.routeSpeedMps
+        let kmh = RouteGeometry.formatSpeedKmh(mps)
+        if viewModel.routePreset == .running, let pace = RouteGeometry.formatPacePerKm(mps) {
+            return "\(kmh) · \(pace)"
+        }
+        return String(format: "%@ (%.1f m/s)", kmh, mps)
+    }
+
+    private func liveSpeedLabel(_ mps: Double) -> String {
+        let kmh = RouteGeometry.formatSpeedKmh(mps)
+        if viewModel.routePreset == .running, let pace = RouteGeometry.formatPacePerKm(mps) {
+            return "\(kmh) · \(pace)"
+        }
+        return kmh
+    }
+
     @ViewBuilder
     private var restoreLocationStatusBanner: some View {
         if viewModel.needsRestoreLocationRefresh {
@@ -790,7 +1233,9 @@ struct MapPickerView: View {
                     Text(
                         viewModel.injectionPhase == .waitingSubscription
                             ? L10n.tr("map.live.waiting_sub.detail")
-                            : L10n.tr("map.live.pending_lock.detail")
+                            : (viewModel.isDistantFromRealLocation
+                                ? L10n.tr("map.live.pending_lock.distant_detail")
+                                : L10n.tr("map.live.pending_lock.detail"))
                     )
                         .font(.caption2)
                         .foregroundStyle(.primary)
@@ -861,7 +1306,12 @@ struct MapPickerView: View {
             return
         }
         RelocTheme.hapticLight()
-        viewModel.selectLocationFromMap(coord)
+        if isRouteMode {
+            guard !viewModel.isRouteSessionActive else { return }
+            viewModel.addRouteWaypoint(fromMapCoordinate: coord)
+        } else {
+            viewModel.selectLocationFromMap(coord)
+        }
     }
 
     private func clearSearch() {
@@ -957,8 +1407,15 @@ struct MapPickerView: View {
         searchStatusMessage = nil
         searchCompleter.clear()
         let coord = item.placemark.coordinate
-        viewModel.selectSearchResultCoordinate(coord, name: item.name, address: item.placemark.title)
-        cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
+        if isRouteMode && !viewModel.isRouteSessionActive {
+            viewModel.addRouteWaypoint(fromSearchCoordinate: coord, name: item.name)
+            if let last = viewModel.routeMapWaypointCoordinates.last {
+                cameraTarget = last
+            }
+        } else {
+            viewModel.selectSearchResultCoordinate(coord, name: item.name, address: item.placemark.title)
+            cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
+        }
         searchResults = []
         searchText = ""
     }
@@ -1009,13 +1466,25 @@ struct MapPickerView: View {
         searchCompleter.clear()
 
         if let coord = parseCoordinateInput(trimmed) {
-            let loc = TargetLocation(
-                latitude: coord.lat,
-                longitude: coord.lon,
-                altitude: coord.alt ?? viewModel.inspectedLocation.altitude
-            )
-            viewModel.selectWGSLocation(loc, resolveAltitude: coord.alt == nil)
-            cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
+            if isRouteMode && !viewModel.isRouteSessionActive {
+                let pt = RoutePoint(
+                    latitude: coord.lat,
+                    longitude: coord.lon,
+                    altitude: coord.alt ?? viewModel.inspectedLocation.altitude
+                )
+                viewModel.addRouteWaypointWGS(pt, name: String(format: "%.5f, %.5f", coord.lat, coord.lon))
+                if let last = viewModel.routeMapWaypointCoordinates.last {
+                    cameraTarget = last
+                }
+            } else {
+                let loc = TargetLocation(
+                    latitude: coord.lat,
+                    longitude: coord.lon,
+                    altitude: coord.alt ?? viewModel.inspectedLocation.altitude
+                )
+                viewModel.selectWGSLocation(loc, resolveAltitude: coord.alt == nil)
+                cameraTarget = viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate
+            }
             searchResults = []
             searchText = ""
             return
@@ -1205,6 +1674,9 @@ private struct InteractiveMKMapView: UIViewRepresentable {
     let activeCoordinate: CLLocationCoordinate2D
     let isSessionRunning: Bool
     let pendingCoordinate: CLLocationCoordinate2D?
+    var routePolyline: [CLLocationCoordinate2D] = []
+    var routeWaypoints: [CLLocationCoordinate2D] = []
+    var showActivePin: Bool = true
     let mapStyle: MapDisplayStyle
     @Binding var cameraTarget: CLLocationCoordinate2D?
     let onTapCoordinate: (CLLocationCoordinate2D) -> Void
@@ -1225,11 +1697,15 @@ private struct InteractiveMKMapView: UIViewRepresentable {
 
         applyMapStyle(to: mapView)
 
-        let activeAnn = TaggedAnnotation(kind: .active)
-        activeAnn.coordinate = activeCoordinate
-        activeAnn.title = L10n.tr("map.pin.active")
-        mapView.addAnnotation(activeAnn)
-        context.coordinator.activeAnnotation = activeAnn
+        if showActivePin {
+            let activeAnn = TaggedAnnotation(kind: .active)
+            activeAnn.coordinate = activeCoordinate
+            activeAnn.title = L10n.tr("map.pin.active")
+            mapView.addAnnotation(activeAnn)
+            context.coordinator.activeAnnotation = activeAnn
+        }
+
+        context.coordinator.syncRoute(on: mapView, polyline: routePolyline, waypoints: routeWaypoints, isRunning: isSessionRunning)
 
         let region = MKCoordinateRegion(
             center: activeCoordinate,
@@ -1251,18 +1727,29 @@ private struct InteractiveMKMapView: UIViewRepresentable {
 
         applyMapStyle(to: uiView)
 
-        if let activeAnn = context.coordinator.activeAnnotation {
-            let activeTitle = L10n.tr("map.pin.active")
-            if activeAnn.title != activeTitle {
-                activeAnn.title = activeTitle
-            }
-            if abs(activeAnn.coordinate.latitude - activeCoordinate.latitude) > 1e-9 ||
-               abs(activeAnn.coordinate.longitude - activeCoordinate.longitude) > 1e-9 {
+        if showActivePin {
+            if let activeAnn = context.coordinator.activeAnnotation {
+                let activeTitle = L10n.tr("map.pin.active")
+                if activeAnn.title != activeTitle {
+                    activeAnn.title = activeTitle
+                }
+                if abs(activeAnn.coordinate.latitude - activeCoordinate.latitude) > 1e-9 ||
+                   abs(activeAnn.coordinate.longitude - activeCoordinate.longitude) > 1e-9 {
+                    activeAnn.coordinate = activeCoordinate
+                }
+                if let markerView = uiView.view(for: activeAnn) as? MKMarkerAnnotationView {
+                    markerView.markerTintColor = isSessionRunning ? UIColor(RelocTheme.emerald) : UIColor(RelocTheme.accent)
+                }
+            } else {
+                let activeAnn = TaggedAnnotation(kind: .active)
                 activeAnn.coordinate = activeCoordinate
+                activeAnn.title = L10n.tr("map.pin.active")
+                uiView.addAnnotation(activeAnn)
+                context.coordinator.activeAnnotation = activeAnn
             }
-            if let markerView = uiView.view(for: activeAnn) as? MKMarkerAnnotationView {
-                markerView.markerTintColor = isSessionRunning ? UIColor(RelocTheme.emerald) : UIColor(RelocTheme.accent)
-            }
+        } else if let activeAnn = context.coordinator.activeAnnotation {
+            uiView.removeAnnotation(activeAnn)
+            context.coordinator.activeAnnotation = nil
         }
 
         if let pending = pendingCoordinate {
@@ -1283,6 +1770,8 @@ private struct InteractiveMKMapView: UIViewRepresentable {
             uiView.removeAnnotation(existing)
             context.coordinator.pendingAnnotation = nil
         }
+
+        context.coordinator.syncRoute(on: uiView, polyline: routePolyline, waypoints: routeWaypoints, isRunning: isSessionRunning)
 
         if let target = cameraTarget {
             let region = MKCoordinateRegion(
@@ -1315,12 +1804,30 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         }
     }
 
+    final class RoutePinAnnotation: MKPointAnnotation {
+        enum Role {
+            case start
+            case via(Int)
+            case end
+        }
+        let role: Role
+        init(role: Role) {
+            self.role = role
+            super.init()
+        }
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate {
         var onTapCoordinate: (CLLocationCoordinate2D) -> Void
         var onRegionChange: ((MKCoordinateRegion) -> Void)?
         var isSessionRunning = false
         var activeAnnotation: TaggedAnnotation?
         var pendingAnnotation: TaggedAnnotation?
+        var routeOverlay: MKPolyline?
+        var routeWaypointAnnotations: [RoutePinAnnotation] = []
+        var lastPolylineSignature = ""
+        var lastWaypointsSignature = ""
+        var lastRunningColorState = false
 
         init(
             onTapCoordinate: @escaping (CLLocationCoordinate2D) -> Void,
@@ -1328,6 +1835,63 @@ private struct InteractiveMKMapView: UIViewRepresentable {
         ) {
             self.onTapCoordinate = onTapCoordinate
             self.onRegionChange = onRegionChange
+        }
+
+        func syncRoute(
+            on mapView: MKMapView,
+            polyline: [CLLocationCoordinate2D],
+            waypoints: [CLLocationCoordinate2D],
+            isRunning: Bool
+        ) {
+            let polySig: String
+            if let first = polyline.first, let last = polyline.last {
+                polySig = "\(polyline.count):\(String(format: "%.5f,%.5f", first.latitude, first.longitude)):\(String(format: "%.5f,%.5f", last.latitude, last.longitude))"
+            } else {
+                polySig = ""
+            }
+            if polySig != lastPolylineSignature || lastRunningColorState != isRunning {
+                lastPolylineSignature = polySig
+                lastRunningColorState = isRunning
+                if let existing = routeOverlay {
+                    mapView.removeOverlay(existing)
+                    routeOverlay = nil
+                }
+                if polyline.count >= 2 {
+                    let overlay = MKPolyline(coordinates: polyline, count: polyline.count)
+                    mapView.addOverlay(overlay, level: .aboveRoads)
+                    routeOverlay = overlay
+                }
+            }
+
+            let wpSig = waypoints.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) }.joined(separator: ";")
+            if wpSig != lastWaypointsSignature {
+                lastWaypointsSignature = wpSig
+                if !routeWaypointAnnotations.isEmpty {
+                    mapView.removeAnnotations(routeWaypointAnnotations)
+                    routeWaypointAnnotations.removeAll()
+                }
+                for (idx, coord) in waypoints.enumerated() {
+                    let role: RoutePinAnnotation.Role
+                    let title: String
+                    if idx == 0 {
+                        role = .start
+                        title = L10n.tr("route.pin.start")
+                    } else if idx == waypoints.count - 1 {
+                        role = .end
+                        title = L10n.tr("route.pin.end")
+                    } else {
+                        role = .via(idx)
+                        title = L10n.format("route.pin.via", idx)
+                    }
+                    let ann = RoutePinAnnotation(role: role)
+                    ann.coordinate = coord
+                    ann.title = title
+                    routeWaypointAnnotations.append(ann)
+                }
+                if !routeWaypointAnnotations.isEmpty {
+                    mapView.addAnnotations(routeWaypointAnnotations)
+                }
+            }
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1344,7 +1908,41 @@ private struct InteractiveMKMapView: UIViewRepresentable {
             }
         }
 
+        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let polyline = overlay as? MKPolyline {
+                let renderer = MKPolylineRenderer(polyline: polyline)
+                renderer.strokeColor = isSessionRunning ? UIColor(RelocTheme.emerald) : UIColor(RelocTheme.accent)
+                renderer.lineWidth = 5.5
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                return renderer
+            }
+            return MKOverlayRenderer(overlay: overlay)
+        }
+
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let routePin = annotation as? RoutePinAnnotation {
+                let id = "reloc.route.pin"
+                let view = (mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
+                    ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
+                view.annotation = annotation
+                view.displayPriority = .required
+                switch routePin.role {
+                case .start:
+                    view.markerTintColor = UIColor(RelocTheme.emerald)
+                    view.glyphText = nil
+                    view.glyphImage = UIImage(systemName: "flag.fill")
+                case .end:
+                    view.markerTintColor = UIColor(RelocTheme.crimson)
+                    view.glyphText = nil
+                    view.glyphImage = UIImage(systemName: "flag.checkered")
+                case .via(let number):
+                    view.markerTintColor = UIColor(RelocTheme.accent)
+                    view.glyphImage = nil
+                    view.glyphText = "\(number)"
+                }
+                return view
+            }
             guard let tagged = annotation as? TaggedAnnotation else { return nil }
             let id = tagged.kind == .active ? "reloc.active" : "reloc.pending"
             let view = (mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
@@ -1372,7 +1970,9 @@ private struct PlacesSheet: View {
 
     @State private var tab = 0
     @State private var newFavoriteName = ""
+    @State private var newRouteName = ""
     @State private var renamingFavorite: FavoriteLocation?
+    @State private var renamingRoute: SavedRoute?
     @State private var renameText = ""
 
     var body: some View {
@@ -1380,7 +1980,8 @@ private struct PlacesSheet: View {
             VStack(spacing: 0) {
                 Picker(L10n.tr("places.picker"), selection: $tab) {
                     Text(L10n.format("places.tab.favorites", viewModel.favorites.count)).tag(0)
-                    Text(L10n.format("places.tab.recents", viewModel.recents.count)).tag(1)
+                    Text(L10n.format("places.tab.routes", viewModel.savedRoutes.count)).tag(1)
+                    Text(L10n.format("places.tab.recents", viewModel.recents.count)).tag(2)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
@@ -1405,12 +2006,22 @@ private struct PlacesSheet: View {
                             } else {
                                 ForEach(viewModel.favorites) { fav in
                                     Button {
-                                        viewModel.selectWGSLocation(
-                                            TargetLocation(latitude: fav.latitude, longitude: fav.longitude, altitude: fav.altitude),
-                                            name: fav.name,
-                                            address: fav.subtitle
-                                        )
-                                        onSelect(viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate)
+                                        if viewModel.controlMode == .route && !viewModel.isRouteSessionActive {
+                                            viewModel.addRouteWaypointWGS(
+                                                RoutePoint(latitude: fav.latitude, longitude: fav.longitude, altitude: fav.altitude),
+                                                name: fav.name
+                                            )
+                                            if let last = viewModel.routeMapWaypointCoordinates.last {
+                                                onSelect(last)
+                                            }
+                                        } else {
+                                            viewModel.selectWGSLocation(
+                                                TargetLocation(latitude: fav.latitude, longitude: fav.longitude, altitude: fav.altitude),
+                                                name: fav.name,
+                                                address: fav.subtitle
+                                            )
+                                            onSelect(viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate)
+                                        }
                                         dismiss()
                                     } label: {
                                         VStack(alignment: .leading, spacing: 2) {
@@ -1438,6 +2049,63 @@ private struct PlacesSheet: View {
                                 }
                             }
                         }
+                    } else if tab == 1 {
+                        if viewModel.plannedRoutePoints.count >= 2 && !viewModel.isPlanningRoute {
+                            Section(L10n.tr("places.routes.save_current")) {
+                                HStack {
+                                    TextField(L10n.tr("route.save.placeholder"), text: $newRouteName)
+                                    Button(L10n.tr("common.save")) {
+                                        viewModel.saveCurrentRoute(name: newRouteName)
+                                        newRouteName = ""
+                                    }
+                                    .disabled(newRouteName.trimmingCharacters(in: .whitespaces).isEmpty)
+                                }
+                            }
+                        }
+
+                        Section(L10n.tr("places.routes.header")) {
+                            if viewModel.savedRoutes.isEmpty {
+                                Text(L10n.tr("places.routes.empty")).foregroundStyle(.secondary)
+                            } else {
+                                ForEach(viewModel.savedRoutes) { route in
+                                    Button {
+                                        viewModel.loadSavedRoute(route)
+                                        if let first = viewModel.routeMapWaypointCoordinates.first {
+                                            onSelect(first)
+                                        }
+                                        dismiss()
+                                    } label: {
+                                        HStack(spacing: 10) {
+                                            SettingsIconBadge(systemName: route.preset.systemImage, color: RelocTheme.accent)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(route.name)
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                                Text("\(route.preset.title) · \(RouteGeometry.formatDistance(route.totalDistanceMeters)) · \(route.loopMode.title)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                    }
+                                    .disabled(viewModel.snapshot.isRunning)
+                                    .swipeActions(edge: .trailing) {
+                                        Button(role: .destructive) {
+                                            viewModel.deleteSavedRoute(id: route.id)
+                                        } label: {
+                                            Label(L10n.tr("common.delete"), systemImage: "trash")
+                                        }
+                                        Button {
+                                            renameText = route.name
+                                            renamingRoute = route
+                                        } label: {
+                                            Label(L10n.tr("common.rename"), systemImage: "pencil")
+                                        }
+                                        .tint(.orange)
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         Section {
                             if viewModel.recents.isEmpty {
@@ -1445,12 +2113,22 @@ private struct PlacesSheet: View {
                             } else {
                                 ForEach(viewModel.recents) { item in
                                     Button {
-                                        viewModel.selectWGSLocation(
-                                            TargetLocation(latitude: item.latitude, longitude: item.longitude, altitude: item.altitude),
-                                            name: item.name,
-                                            address: item.subtitle
-                                        )
-                                        onSelect(viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate)
+                                        if viewModel.controlMode == .route && !viewModel.isRouteSessionActive {
+                                            viewModel.addRouteWaypointWGS(
+                                                RoutePoint(latitude: item.latitude, longitude: item.longitude, altitude: item.altitude),
+                                                name: item.name
+                                            )
+                                            if let last = viewModel.routeMapWaypointCoordinates.last {
+                                                onSelect(last)
+                                            }
+                                        } else {
+                                            viewModel.selectWGSLocation(
+                                                TargetLocation(latitude: item.latitude, longitude: item.longitude, altitude: item.altitude),
+                                                name: item.name,
+                                                address: item.subtitle
+                                            )
+                                            onSelect(viewModel.pendingMapCoordinate ?? viewModel.activeMapCoordinate)
+                                        }
                                         dismiss()
                                     } label: {
                                         VStack(alignment: .leading, spacing: 2) {
@@ -1490,17 +2168,28 @@ private struct PlacesSheet: View {
                     Button(L10n.tr("common.close")) { dismiss() }
                 }
             }
+            .onAppear {
+                if viewModel.controlMode == .route {
+                    tab = 1
+                }
+            }
             .alert(L10n.tr("places.rename.title"), isPresented: Binding(
-                get: { renamingFavorite != nil },
-                set: { if !$0 { renamingFavorite = nil } }
+                get: { renamingFavorite != nil || renamingRoute != nil },
+                set: { if !$0 { renamingFavorite = nil; renamingRoute = nil } }
             )) {
                 TextField(L10n.tr("places.rename.placeholder"), text: $renameText)
-                Button(L10n.tr("common.cancel"), role: .cancel) { renamingFavorite = nil }
+                Button(L10n.tr("common.cancel"), role: .cancel) {
+                    renamingFavorite = nil
+                    renamingRoute = nil
+                }
                 Button(L10n.tr("common.save")) {
                     if let fav = renamingFavorite {
                         viewModel.renameFavorite(id: fav.id, newName: renameText)
+                    } else if let route = renamingRoute {
+                        viewModel.renameSavedRoute(id: route.id, newName: renameText)
                     }
                     renamingFavorite = nil
+                    renamingRoute = nil
                 }
             }
         }

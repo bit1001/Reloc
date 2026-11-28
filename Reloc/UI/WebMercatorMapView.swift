@@ -10,6 +10,9 @@ struct WebMercatorMapView: UIViewRepresentable {
     let activeCoordinate: CLLocationCoordinate2D
     let isSessionRunning: Bool
     let pendingCoordinate: CLLocationCoordinate2D?
+    var routePolyline: [CLLocationCoordinate2D] = []
+    var routeWaypoints: [CLLocationCoordinate2D] = []
+    var showActivePin: Bool = true
     let mapSource: MapSource
     @Binding var cameraTarget: CLLocationCoordinate2D?
     let onTapCoordinate: (CLLocationCoordinate2D) -> Void
@@ -21,7 +24,8 @@ struct WebMercatorMapView: UIViewRepresentable {
         view.onRegionChange = onRegionChange
         view.mapSource = mapSource
         view.setCenter(activeCoordinate, zoom: 15.0, animated: false)
-        view.updatePins(active: activeCoordinate, isRunning: isSessionRunning, pending: pendingCoordinate)
+        view.updatePins(active: activeCoordinate, isRunning: isSessionRunning, pending: pendingCoordinate, showActive: showActivePin)
+        view.updateRoute(polyline: routePolyline, waypoints: routeWaypoints, isRunning: isSessionRunning)
         return view
     }
 
@@ -31,7 +35,8 @@ struct WebMercatorMapView: UIViewRepresentable {
         if uiView.mapSource != mapSource {
             uiView.mapSource = mapSource
         }
-        uiView.updatePins(active: activeCoordinate, isRunning: isSessionRunning, pending: pendingCoordinate)
+        uiView.updatePins(active: activeCoordinate, isRunning: isSessionRunning, pending: pendingCoordinate, showActive: showActivePin)
+        uiView.updateRoute(polyline: routePolyline, waypoints: routeWaypoints, isRunning: isSessionRunning)
 
         if let target = cameraTarget {
             let desiredZoom = max(uiView.currentZoom, 14.5)
@@ -99,12 +104,21 @@ final class WebMercatorCanvasView: UIView, UIGestureRecognizerDelegate {
     private let maxZoom: Double = 18.5
 
     private let tileContainer = UIView()
+    private let routeContainer = UIView()
+    private let routeCasingLayer = CAShapeLayer()
+    private let routeStrokeLayer = CAShapeLayer()
     private let pinContainer = UIView()
     private let activePin = MapPinView(kind: .active)
     private let pendingPin = MapPinView(kind: .pending)
+    private var routeWaypointViews: [RouteBadgeView] = []
+    private var routePolylineNorms: [CGPoint] = []
+    private var routeWaypointNorms: [CGPoint] = []
+    private var lastPolylineSignature = ""
+    private var lastWaypointsSignature = ""
 
     private var activeCoord = CLLocationCoordinate2D(latitude: 37.334606, longitude: -122.009102)
     private var pendingCoord: CLLocationCoordinate2D?
+    private var showActivePin = true
 
     private var tileViews: [TileKey: UIImageView] = [:]
     private var inFlightTasks: [TileKey: URLSessionDataTask] = [:]
@@ -169,6 +183,23 @@ final class WebMercatorCanvasView: UIView, UIGestureRecognizerDelegate {
         tileContainer.isUserInteractionEnabled = false
         addSubview(tileContainer)
 
+        routeContainer.isUserInteractionEnabled = false
+        addSubview(routeContainer)
+
+        routeCasingLayer.fillColor = UIColor.clear.cgColor
+        routeCasingLayer.strokeColor = UIColor.white.withAlphaComponent(0.92).cgColor
+        routeCasingLayer.lineWidth = 8.0
+        routeCasingLayer.lineCap = .round
+        routeCasingLayer.lineJoin = .round
+        routeContainer.layer.addSublayer(routeCasingLayer)
+
+        routeStrokeLayer.fillColor = UIColor.clear.cgColor
+        routeStrokeLayer.strokeColor = UIColor(RelocTheme.accent).cgColor
+        routeStrokeLayer.lineWidth = 5.0
+        routeStrokeLayer.lineCap = .round
+        routeStrokeLayer.lineJoin = .round
+        routeContainer.layer.addSublayer(routeStrokeLayer)
+
         pinContainer.isUserInteractionEnabled = false
         addSubview(pinContainer)
 
@@ -197,6 +228,9 @@ final class WebMercatorCanvasView: UIView, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         tileContainer.frame = bounds
+        routeContainer.frame = bounds
+        routeCasingLayer.frame = bounds
+        routeStrokeLayer.frame = bounds
         pinContainer.frame = bounds
         renderScene()
         if !hasReportedInitialRegion, bounds.width > 1, bounds.height > 1 {
@@ -263,11 +297,52 @@ final class WebMercatorCanvasView: UIView, UIGestureRecognizerDelegate {
         startDisplayLink()
     }
 
-    func updatePins(active: CLLocationCoordinate2D, isRunning: Bool, pending: CLLocationCoordinate2D?) {
+    func updatePins(active: CLLocationCoordinate2D, isRunning: Bool, pending: CLLocationCoordinate2D?, showActive: Bool = true) {
         activeCoord = active
         pendingCoord = pending
+        showActivePin = showActive
         activePin.setRunning(isRunning)
+        activePin.isHidden = !showActive
         pendingPin.isHidden = (pending == nil)
+        layoutPins()
+    }
+
+    func updateRoute(polyline: [CLLocationCoordinate2D], waypoints: [CLLocationCoordinate2D], isRunning: Bool) {
+        routeStrokeLayer.strokeColor = (isRunning ? UIColor(RelocTheme.emerald) : UIColor(RelocTheme.accent)).cgColor
+
+        let polySig: String
+        if let first = polyline.first, let last = polyline.last {
+            polySig = "\(polyline.count):\(String(format: "%.5f,%.5f", first.latitude, first.longitude)):\(String(format: "%.5f,%.5f", last.latitude, last.longitude))"
+        } else {
+            polySig = ""
+        }
+        if polySig != lastPolylineSignature {
+            lastPolylineSignature = polySig
+            routePolylineNorms = polyline.map { WebMercatorProjection.toNormalized($0) }
+        }
+
+        let wpSig = waypoints.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) }.joined(separator: ";")
+        if wpSig != lastWaypointsSignature {
+            lastWaypointsSignature = wpSig
+            routeWaypointNorms = waypoints.map { WebMercatorProjection.toNormalized($0) }
+            for v in routeWaypointViews {
+                v.removeFromSuperview()
+            }
+            routeWaypointViews.removeAll()
+            for idx in waypoints.indices {
+                let role: RouteBadgeView.Role
+                if idx == 0 {
+                    role = .start
+                } else if idx == waypoints.count - 1 {
+                    role = .end
+                } else {
+                    role = .via(idx)
+                }
+                let badge = RouteBadgeView(role: role)
+                pinContainer.insertSubview(badge, belowSubview: activePin)
+                routeWaypointViews.append(badge)
+            }
+        }
         layoutPins()
     }
 
@@ -509,8 +584,30 @@ final class WebMercatorCanvasView: UIView, UIGestureRecognizerDelegate {
 
     private func layoutPins() {
         guard bounds.width > 1, bounds.height > 1 else { return }
-        let activePt = screenPoint(for: WebMercatorProjection.toNormalized(activeCoord))
-        activePin.center = CGPoint(x: activePt.x, y: activePt.y - activePin.bounds.height / 2.0)
+
+        if routePolylineNorms.count >= 2 {
+            let path = CGMutablePath()
+            let firstPt = screenPoint(for: routePolylineNorms[0])
+            path.move(to: firstPt)
+            for idx in 1..<routePolylineNorms.count {
+                path.addLine(to: screenPoint(for: routePolylineNorms[idx]))
+            }
+            routeCasingLayer.path = path
+            routeStrokeLayer.path = path
+        } else {
+            routeCasingLayer.path = nil
+            routeStrokeLayer.path = nil
+        }
+
+        for (idx, norm) in routeWaypointNorms.enumerated() where idx < routeWaypointViews.count {
+            let pt = screenPoint(for: norm)
+            routeWaypointViews[idx].center = pt
+        }
+
+        if showActivePin {
+            let activePt = screenPoint(for: WebMercatorProjection.toNormalized(activeCoord))
+            activePin.center = CGPoint(x: activePt.x, y: activePt.y - activePin.bounds.height / 2.0)
+        }
 
         if let pending = pendingCoord {
             let pendingPt = screenPoint(for: WebMercatorProjection.toNormalized(pending))
@@ -650,5 +747,59 @@ private final class MapPinView: UIView {
         }
         badge.backgroundColor = color
         stem.backgroundColor = color
+    }
+}
+
+private final class RouteBadgeView: UIView {
+    enum Role {
+        case start
+        case via(Int)
+        case end
+    }
+
+    init(role: Role) {
+        let size: CGFloat
+        switch role {
+        case .start, .end: size = 28
+        case .via: size = 22
+        }
+        super.init(frame: CGRect(x: 0, y: 0, width: size, height: size))
+        isUserInteractionEnabled = false
+        layer.cornerRadius = size / 2.0
+        layer.borderWidth = 2.0
+        layer.borderColor = UIColor.white.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.25
+        layer.shadowRadius = 4
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        switch role {
+        case .start:
+            backgroundColor = UIColor(RelocTheme.emerald)
+            let img = UIImageView(frame: bounds)
+            img.image = UIImage(systemName: "flag.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+            img.tintColor = .white
+            img.contentMode = .center
+            addSubview(img)
+        case .end:
+            backgroundColor = UIColor(RelocTheme.crimson)
+            let img = UIImageView(frame: bounds)
+            img.image = UIImage(systemName: "flag.checkered", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+            img.tintColor = .white
+            img.contentMode = .center
+            addSubview(img)
+        case .via(let number):
+            backgroundColor = UIColor(RelocTheme.accent)
+            let lbl = UILabel(frame: bounds)
+            lbl.text = "\(number)"
+            lbl.textColor = .white
+            lbl.font = UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+            lbl.textAlignment = .center
+            addSubview(lbl)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }

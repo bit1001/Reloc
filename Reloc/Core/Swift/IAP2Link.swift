@@ -58,8 +58,12 @@ public final class IAP2Link {
         try? socket.write(rst.encode(), timeout: 0.35)
     }
 
+    private static var monotonicNow: TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
     private func readPacket(timeout: TimeInterval) throws -> RLIAP2Packet? {
-        let deadline = CFAbsoluteTimeGetCurrent() + max(timeout, 0.001)
+        let deadline = Self.monotonicNow + max(timeout, 0.001)
 
         if pendingHeader == nil {
             var timedOut: ObjCBool = false
@@ -88,7 +92,7 @@ public final class IAP2Link {
             return try RLIAP2Packet.decode(from: header)
         }
 
-        let remaining = max(deadline - CFAbsoluteTimeGetCurrent(), 0.001)
+        let remaining = max(deadline - Self.monotonicNow, 0.001)
         var timedOut: ObjCBool = false
         let rest: Data
         do {
@@ -145,13 +149,13 @@ public final class IAP2Link {
                 throw IAP2LinkError.timeout("iAP2 handshake cancelled")
             }
             try writePacket(syn)
-            let attemptDeadline = CFAbsoluteTimeGetCurrent() + 2.0
+            let attemptDeadline = Self.monotonicNow + 2.0
             var response: RLIAP2Packet?
             while !shouldCancel() {
-                let remaining = attemptDeadline - CFAbsoluteTimeGetCurrent()
+                let remaining = attemptDeadline - Self.monotonicNow
                 if remaining <= 0 { break }
                 guard let candidate = try readPacket(timeout: remaining) else {
-                    if CFAbsoluteTimeGetCurrent() >= attemptDeadline { break }
+                    if Self.monotonicNow >= attemptDeadline { break }
                     continue
                 }
                 if (candidate.flags & RLIAP2LinkFlags.RST.rawValue) != 0 {
@@ -272,14 +276,14 @@ public final class IAP2Link {
                 )
                 try writePacket(pkt)
 
-                let deadline = CFAbsoluteTimeGetCurrent() + retransmitSeconds
+                let deadline = Self.monotonicNow + retransmitSeconds
                 while !shouldCancel() {
-                    let remaining = deadline - CFAbsoluteTimeGetCurrent()
+                    let remaining = deadline - Self.monotonicNow
                     if remaining <= 0 { break }
                     guard let incoming = try readPacket(timeout: remaining) else {
                         // A non-cancellation socket.nudge() (e.g. live coordinate update) can wake
                         // readPacket early; keep waiting for the peer ACK until the true deadline.
-                        if CFAbsoluteTimeGetCurrent() >= deadline || shouldCancel() {
+                        if Self.monotonicNow >= deadline || shouldCancel() {
                             break
                         }
                         continue
@@ -325,9 +329,9 @@ public final class IAP2Link {
             )
             do {
                 try writePacket(pkt, timeout: timeout)
-                let deadline = CFAbsoluteTimeGetCurrent() + min(0.2, timeout)
+                let deadline = Self.monotonicNow + min(0.2, timeout)
                 while true {
-                    let remaining = deadline - CFAbsoluteTimeGetCurrent()
+                    let remaining = deadline - Self.monotonicNow
                     if remaining <= 0 { break }
                     guard let incoming = try readPacket(timeout: remaining) else { break }
                     try accept(incoming)
@@ -343,9 +347,9 @@ public final class IAP2Link {
     }
 
     public func receive(timeout: TimeInterval) throws -> RLIAP2Message? {
-        let deadline = CFAbsoluteTimeGetCurrent() + timeout
+        let deadline = Self.monotonicNow + timeout
         while messageQueue.isEmpty {
-            let remaining = deadline - CFAbsoluteTimeGetCurrent()
+            let remaining = deadline - Self.monotonicNow
             if remaining <= 0 {
                 return nil
             }

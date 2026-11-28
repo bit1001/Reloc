@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		009471309CEF715784DBF635 /* RLMFiSigner.m in Sources */ = {isa = PBXBuildFile; fileRef = 8CC9A62B9DE4E6EB870CDCD3 /* RLMFiSigner.m */; };
 		07874DF23AB1FE87C5FFEEB1 /* RLStreamSocket.m in Sources */ = {isa = PBXBuildFile; fileRef = 798BAA61FAEB07BAF0FDB485 /* RLStreamSocket.m */; };
+		07E8FAD6ADA9A6DD44563978 /* TrajectoryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC2D7243634E88260F1DAE4 /* TrajectoryEngine.swift */; };
 		0EA76798E33EFF8AD157E396 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1CDE08702EBA243E2EB18470 /* AVKit.framework */; };
 		0F56C155BC682C7AEDE21302 /* RelocViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D91B6530ED10700ADF3B10F5 /* RelocViewModel.swift */; };
 		159018AFBDECEB4E60B4F58D /* RLVirtualAccessoryTransport.m in Sources */ = {isa = PBXBuildFile; fileRef = 5F584A9F1EDD8F6A540BC544 /* RLVirtualAccessoryTransport.m */; };
@@ -30,11 +31,13 @@
 		C7C20C2562D2ECA1CB57F2ED /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C228CB38BBF6624A23FCE122 /* CredentialStore.swift */; };
 		CB5CDD966D6CBD41B143BB84 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E174E4E40873ACEF78744DF /* Assets.xcassets */; };
 		D90B08DE6CBDAB0F522476F8 /* WebMercatorMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3BA8E218C73FE7D2B1330A4 /* WebMercatorMapView.swift */; };
+		E959641BFF11A7EB286C2A34 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 590780C5280F26310966607E /* AppIntents.framework */; };
 		EB09B8A6EE1013A84AFD60D6 /* LiveCoreLocationMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D0C87683C6D8173DE104180 /* LiveCoreLocationMonitor.swift */; };
 		ED6AE5132CEA42E9EA185A91 /* ProtocolLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF6E059385E81D275048E16 /* ProtocolLogsView.swift */; };
 		EF280A6D2B22747C6F0E3A68 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE1FD17CCE39595BFAA6FE0 /* Localization.swift */; };
 		F3C52E6FF921DB3FA5A0B039 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 29EED7363A6D049A5CE8120A /* InfoPlist.strings */; };
 		F42E982FD4227D9FFC57198E /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5633FA5614D05E2D9EBD63D5 /* Security.framework */; };
+		F44CE75AD1959D9D8EE7A989 /* RelocAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74BA4BF4D70E11992C5D7B4 /* RelocAppIntents.swift */; };
 		F7DB4FCAAAA968F4327888BB /* LocationRefreshPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 035CC2FE72BB452213491B08 /* LocationRefreshPresenter.swift */; };
 /* End PBXBuildFile section */
 
@@ -50,6 +53,7 @@
 		54E587C4B8FC9E4E58EFE516 /* NMEAGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NMEAGenerator.swift; sourceTree = "<group>"; };
 		5633FA5614D05E2D9EBD63D5 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		5701C6319FBA606AF05F137D /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		590780C5280F26310966607E /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		5E174E4E40873ACEF78744DF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5F584A9F1EDD8F6A540BC544 /* RLVirtualAccessoryTransport.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RLVirtualAccessoryTransport.m; sourceTree = "<group>"; };
 		64ACFAE8A6A12376682329E7 /* MapKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MapKit.framework; path = System/Library/Frameworks/MapKit.framework; sourceTree = SDKROOT; };
@@ -60,6 +64,7 @@
 		838BE0F1264239EB51809DAC /* RLASN1DER.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RLASN1DER.m; sourceTree = "<group>"; };
 		8CC9A62B9DE4E6EB870CDCD3 /* RLMFiSigner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RLMFiSigner.m; sourceTree = "<group>"; };
 		8D0C87683C6D8173DE104180 /* LiveCoreLocationMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveCoreLocationMonitor.swift; sourceTree = "<group>"; };
+		9AC2D7243634E88260F1DAE4 /* TrajectoryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrajectoryEngine.swift; sourceTree = "<group>"; };
 		9AF6E059385E81D275048E16 /* ProtocolLogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolLogsView.swift; sourceTree = "<group>"; };
 		9C59C32FC1BDE74B37605057 /* MapPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapPickerView.swift; sourceTree = "<group>"; };
 		9DE1FD17CCE39595BFAA6FE0 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
@@ -73,6 +78,7 @@
 		C3BA8E218C73FE7D2B1330A4 /* WebMercatorMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMercatorMapView.swift; sourceTree = "<group>"; };
 		CB14CC02951EAC5F9F696222 /* IAP2Link.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IAP2Link.swift; sourceTree = "<group>"; };
 		CED8E0AAF25D4930FAC27968 /* RLVirtualAccessoryTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RLVirtualAccessoryTransport.h; sourceTree = "<group>"; };
+		D74BA4BF4D70E11992C5D7B4 /* RelocAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelocAppIntents.swift; sourceTree = "<group>"; };
 		D91B6530ED10700ADF3B10F5 /* RelocViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelocViewModel.swift; sourceTree = "<group>"; };
 		E0CE22ABB9341372C4304BA7 /* MFi */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MFi; path = Reloc/Resources/MFi; sourceTree = SOURCE_ROOT; };
 		F26F9DD2BDF2236070FF3B0A /* RLMFiSigner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RLMFiSigner.h; sourceTree = "<group>"; };
@@ -89,6 +95,7 @@
 				860DFC85B98B5F852C9F532C /* CoreLocation.framework in Frameworks */,
 				27BEEB3AD1FE25540DB009ED /* AVFoundation.framework in Frameworks */,
 				0EA76798E33EFF8AD157E396 /* AVKit.framework in Frameworks */,
+				E959641BFF11A7EB286C2A34 /* AppIntents.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,7 +131,9 @@
 				9DE1FD17CCE39595BFAA6FE0 /* Localization.swift */,
 				035CC2FE72BB452213491B08 /* LocationRefreshPresenter.swift */,
 				54E587C4B8FC9E4E58EFE516 /* NMEAGenerator.swift */,
+				D74BA4BF4D70E11992C5D7B4 /* RelocAppIntents.swift */,
 				D91B6530ED10700ADF3B10F5 /* RelocViewModel.swift */,
+				9AC2D7243634E88260F1DAE4 /* TrajectoryEngine.swift */,
 			);
 			path = Swift;
 			sourceTree = "<group>";
@@ -143,6 +152,7 @@
 		8DC834BFDBB112647D56B1C7 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				590780C5280F26310966607E /* AppIntents.framework */,
 				77D35A014900FE527B79661E /* AVFoundation.framework */,
 				1CDE08702EBA243E2EB18470 /* AVKit.framework */,
 				2B0E10CE91EAA37DC5056CFE /* CoreLocation.framework */,
@@ -288,8 +298,10 @@
 				07874DF23AB1FE87C5FFEEB1 /* RLStreamSocket.m in Sources */,
 				159018AFBDECEB4E60B4F58D /* RLVirtualAccessoryTransport.m in Sources */,
 				946CDB3F3CE0DF37EB6A5259 /* RelocApp.swift in Sources */,
+				F44CE75AD1959D9D8EE7A989 /* RelocAppIntents.swift in Sources */,
 				7A7E15A0295ABAF77EB98636 /* RelocTheme.swift in Sources */,
 				0F56C155BC682C7AEDE21302 /* RelocViewModel.swift in Sources */,
+				07E8FAD6ADA9A6DD44563978 /* TrajectoryEngine.swift in Sources */,
 				D90B08DE6CBDAB0F522476F8 /* WebMercatorMapView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -365,7 +377,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -466,7 +478,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

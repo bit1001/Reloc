@@ -1,8 +1,13 @@
+import AppIntents
 import SwiftUI
 
 @main
 struct RelocApp: App {
-    @StateObject private var viewModel = RelocViewModel()
+    @ObservedObject private var viewModel = RelocViewModel.shared
+
+    init() {
+        RelocAppShortcuts.updateAppShortcutParameters()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -10,6 +15,9 @@ struct RelocApp: App {
                 .tint(RelocTheme.accent)
                 .preferredColorScheme(viewModel.appearanceMode.colorScheme)
                 .environment(\.locale, viewModel.appLanguage.locale)
+                .onOpenURL { url in
+                    viewModel.handleIncomingURL(url)
+                }
         }
     }
 }

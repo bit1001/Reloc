@@ -74,6 +74,17 @@ extension View {
     func relocGlassCard(cornerRadius: CGFloat = 24, padding: CGFloat = 15) -> some View {
         modifier(RelocGlassCard(cornerRadius: cornerRadius, padding: padding))
     }
+
+    @ViewBuilder
+    func relocOnChange<V: Equatable>(of value: V, perform action: @escaping (V) -> Void) -> some View {
+        if #available(iOS 17.0, *) {
+            self.onChange(of: value) { _, newValue in
+                action(newValue)
+            }
+        } else {
+            self.onChange(of: value, perform: action)
+        }
+    }
 }
 
 /// Compact pill-shaped floating icon button for the map HUD.
@@ -180,7 +191,7 @@ struct PulsingStatusDot: View {
         .onAppear {
             if isPulsing { pulse = true }
         }
-        .onChange(of: isPulsing) { _, active in
+        .relocOnChange(of: isPulsing) { active in
             pulse = active
         }
     }

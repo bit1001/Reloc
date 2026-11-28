@@ -7,6 +7,7 @@ struct ProtocolLogsView: View {
     @State private var filterText = ""
     @State private var categoryFilter: LogCategory = .all
     @State private var copiedBanner = false
+    @State private var scrollTask: Task<Void, Never>?
 
     enum LogCategory: String, CaseIterable, Identifiable {
         case all
@@ -57,7 +58,12 @@ struct ProtocolLogsView: View {
         }
     }
 
+    private static let bottomAnchorID = "reloc-logs-bottom-anchor"
+
     var body: some View {
+        let events = filteredEvents
+        let latestEventID = events.last?.id
+
         NavigationStack {
             VStack(spacing: 0) {
                 telemetryDashboard
@@ -81,7 +87,7 @@ struct ProtocolLogsView: View {
                         }
                     }
                     Spacer()
-                    Text(L10n.format("logs.events_count", filteredEvents.count))
+                    Text(L10n.format("logs.events_count", events.count))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -90,7 +96,7 @@ struct ProtocolLogsView: View {
 
                 Divider()
 
-                if filteredEvents.isEmpty {
+                if events.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "waveform.path.ecg.rectangle")
                             .font(.system(size: 40))
@@ -105,40 +111,56 @@ struct ProtocolLogsView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
+                    // Use ScrollView + LazyVStack with a static bottom sentinel and debounced scrolling
+                    // instead of List + synchronous withAnimation(scrollTo), avoiding an iOS 16.0 SwiftUI
+                    // UICollectionView ListCoreCoordinator Collection.endIndex SIGTRAP crash under bursts.
                     ScrollViewReader { proxy in
-                        List(filteredEvents) { event in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack(spacing: 8) {
-                                    Circle()
-                                        .fill(event.isError ? RelocTheme.crimson : RelocTheme.accent)
-                                        .frame(width: 6, height: 6)
-                                    Text(event.name)
-                                        .font(.caption.monospaced().weight(.semibold))
-                                        .foregroundStyle(event.isError ? RelocTheme.crimson : RelocTheme.accent)
-                                    Spacer()
-                                    Text(Self.timeFormatter.string(from: event.timestamp))
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                ForEach(events) { event in
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        HStack(spacing: 8) {
+                                            Circle()
+                                                .fill(event.isError ? RelocTheme.crimson : RelocTheme.accent)
+                                                .frame(width: 6, height: 6)
+                                            Text(event.name)
+                                                .font(.caption.monospaced().weight(.semibold))
+                                                .foregroundStyle(event.isError ? RelocTheme.crimson : RelocTheme.accent)
+                                            Spacer()
+                                            Text(Self.timeFormatter.string(from: event.timestamp))
+                                                .font(.caption2.monospacedDigit())
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text(event.detail)
+                                            .font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(event.isError ? RelocTheme.crimson : .primary)
+                                            .textSelection(.enabled)
+                                            .padding(8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    }
+                                    .padding(.horizontal, 14)
                                 }
-                                Text(event.detail)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(event.isError ? RelocTheme.crimson : .primary)
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(Self.bottomAnchorID)
                             }
-                            .id(event.id)
-                            .listRowSeparator(.hidden)
-                            .listRowInsets(EdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 14))
+                            .padding(.vertical, 10)
                         }
-                        .listStyle(.plain)
-                        .onChange(of: viewModel.events.count) { _, _ in
-                            if let last = filteredEvents.last {
-                                withAnimation {
-                                    proxy.scrollTo(last.id, anchor: .bottom)
-                                }
+                        .background(Color(.systemBackground))
+                        .relocOnChange(of: latestEventID) { newID in
+                            guard newID != nil else { return }
+                            scrollTask?.cancel()
+                            scrollTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 80_000_000)
+                                guard !Task.isCancelled else { return }
+                                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
+                        }
+                        .onDisappear {
+                            scrollTask?.cancel()
+                            scrollTask = nil
                         }
                     }
                 }

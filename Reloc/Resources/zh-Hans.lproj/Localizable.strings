@@ -42,9 +42,14 @@
 "settings.duration" = "会话时长";
 "settings.duration.continuous" = "持续运行";
 "settings.duration.seconds" = "%d 秒";
+"settings.duration.hours" = "%d 小时";
 "settings.gcj02" = "中国大陆地图 GCJ-02 纠偏";
 "settings.micro_jitter" = "自然微漂移（±0.6m GPS 抖动）";
-"settings.keep_alive" = "后台保活（切换地图不断连）";
+"settings.background_mode.title" = "后台运行方式";
+"settings.background_mode.always" = "原生定位保活已就绪（无音频占用）";
+"settings.background_mode.upgrade_hint" = "建议将定位权限设为「始终」以提升锁屏长时稳定性";
+"settings.background_mode.action" = "去设置";
+"settings.background_mode.footer" = "已移除常驻静默音频保活，全程仅使用系统原生定位后台模式运行，零音频冲突、更低功耗；长时间锁屏挂机建议在系统设置中将 Reloc 定位权限设为「始终」。";
 "settings.section.appearance" = "地图与外观";
 "settings.appearance" = "外观主题";
 "settings.language" = "应用语言";
@@ -52,6 +57,13 @@
 "settings.map_source" = "地图数据源";
 "settings.apple_map_style" = "Apple 地图样式";
 "settings.appearance.footer" = "默认使用 Apple 系统地图（MapKit 原生）；如需无高德字样的纯国际 WGS-84 底图，可切换为全球街道图、OpenStreetMap 或全球卫星图。";
+"settings.section.shortcuts" = "快捷指令";
+"settings.shortcuts.start_summary" = "选收藏点 → 启动定位 → 跳转系统定位页清除缓存";
+"settings.shortcuts.stop_summary" = "关闭定位 → 拉起 7 秒浮窗并跳转系统定位页恢复真实 GPS";
+"settings.shortcuts.open_app" = "打开 Apple「快捷指令」";
+"settings.shortcuts.copy_prefs_title" = "复制系统定位页直达链接";
+"settings.shortcuts.copied" = "已复制";
+"settings.shortcuts.footer" = "在「快捷指令」App 搜索 Reloc 即可添加以上两个指令；若需在快捷指令里自行拼接跳转，可在「开始虚拟定位」后接「打开 URL」并传入 prefs:root=Privacy&path=LOCATION。";
 
 /* Map Picker */
 "map.search.placeholder" = "搜索地点或输入 纬度, 经度";
@@ -104,6 +116,7 @@
 "map.live.confirmed.subtitle" = "系统已确认外设来源（isProducedByAccessory = true），可直接切去任意 App";
 "map.live.waiting_sub.detail" = "MFi 鉴权已通过，但系统尚未订阅外设 GPS。点击下方一键刷新（含悬浮 7 秒倒计时）即可唤醒订阅。";
 "map.live.pending_lock.detail" = "NMEA 已连通，但系统仍在沿用本机缓存定位。点击下方一键刷新（含悬浮 7 秒倒计时）即可 100% 强制切换。";
+"map.live.pending_lock.distant_detail" = "目标距真实位置 >15 km，已被系统 Wi-Fi / 基站筛选（CLNmeaScreener）拦截。点击下方一键刷新；跨城或跨国轨迹连续移动建议开启飞行模式（关闭 Wi-Fi 与蜂窝基站定位）。";
 "map.live.refresh_button" = "一键刷新定位服务（浮窗指引）";
 "map.live.connecting" = "正在建立本机外设通道并完成 MFi 鉴权…";
 "map.live.waking_sub" = "鉴权成功，正在自动唤醒系统外设 GPS 订阅…";
@@ -115,18 +128,61 @@
 "map.search.error.network" = "搜索失败，请检查网络连接";
 
 /* Places Sheet */
-"places.title" = "收藏与历史";
+"places.title" = "收藏与路线";
 "places.picker" = "分类";
 "places.tab.favorites" = "收藏 (%d)";
-"places.tab.recents" = "最近记录 (%d)";
+"places.tab.routes" = "路线 (%d)";
+"places.tab.recents" = "最近 (%d)";
 "places.save_current.header" = "收藏当前选中位置";
 "places.name.placeholder" = "输入名称";
 "places.favorites.header" = "已保存收藏";
 "places.favorites.empty" = "暂无收藏地点";
+"places.routes.save_current" = "收藏当前规划路线";
+"places.routes.header" = "已保存常用路线";
+"places.routes.empty" = "暂无收藏路线，在轨迹模式规划后可点击书签保存";
 "places.recents.header" = "最近使用（最多 30 条）";
 "places.recents.empty" = "暂无最近使用记录";
-"places.rename.title" = "重命名收藏";
+"places.rename.title" = "重命名";
 "places.rename.placeholder" = "新名称";
+
+/* Mode & Trajectory Simulation */
+"mode.fixed" = "定格";
+"mode.route" = "轨迹";
+"route.search.placeholder" = "搜索添加起点、途经点或终点";
+"route.preset.walking" = "步行";
+"route.preset.running" = "跑步";
+"route.preset.cycling" = "骑行";
+"route.preset.driving" = "驾车";
+"route.loop.once" = "单次定格";
+"route.loop.round_trip" = "折返往返";
+"route.loop.closed" = "闭合循环";
+"route.realistic.short" = "拟真";
+"route.speed.label" = "移动速度";
+"route.button.start" = "开始轨迹模拟";
+"route.button.pause" = "暂停";
+"route.button.resume" = "继续";
+"route.pin.start" = "起点";
+"route.pin.end" = "终点";
+"route.pin.via" = "途经点 %d";
+"route.planning.calculating" = "正在沿道路规划轨迹…";
+"route.planning.empty_title" = "贴路轨迹模拟";
+"route.planning.empty_subtitle" = "点击地图或上方搜索添加起点与终点（支持多途经点）";
+"route.planning.need_end_title" = "已选起点 · 请点击地图添加终点";
+"route.planning.start_selected" = "起点：%@";
+"route.planning.ready_title" = "贴路轨迹 · %@";
+"route.planning.ready_subtitle" = "%d 个途经点 · 预计 %@";
+"route.notice.straight_fallback" = "当前区域无道路导航数据，已自动改用直线插值轨迹";
+"route.notice.partial_fallback" = "部分路段无道路数据，已自动使用直线衔接";
+"route.status.waiting_lock" = "等待锁定起点后发车…";
+"route.status.waiting_relock" = "系统脱锁/被拦截，已原地暂停等待重新锁定…";
+"route.status.moving" = "轨迹模拟运行中";
+"route.status.moving_lap" = "轨迹模拟中 · 第 %d 圈";
+"route.status.paused" = "轨迹已暂停（当前点定格）";
+"route.status.completed" = "已到达终点（定格停留）";
+"route.eta.done" = "已到达";
+"route.save.title" = "收藏常用路线";
+"route.save.placeholder" = "输入路线名称";
+"route.save.message" = "将保存当前贴路轨迹、模式与速度设置。";
 
 /* Starter Favorites */
 "favorite.tokyo_station.name" = "东京站";
@@ -202,3 +258,20 @@
 "error.virtual.create_conn" = "系统未允许创建虚拟外设连接，请查看协议日志。";
 "error.virtual.create_endpoint" = "系统未允许创建或发布 iAP2 虚拟端点。";
 "error.virtual.no_detection" = "虚拟端点未返回 iAP2 检测响应。";
+
+/* App Intents & Shortcuts */
+"intent.error.permission_denied" = "Reloc 未获得系统定位权限，请先打开 Reloc 并在系统设置中设为「始终」允许。";
+"intent.entity.favorite" = "收藏地点";
+"intent.param.favorite" = "收藏地点";
+"intent.param.auto_jump_settings" = "自动跳转系统定位页";
+"intent.prompt.choose_favorite" = "请选择要定位的收藏地点";
+
+"intent.start_favorite.title" = "开始虚拟定位";
+"intent.start_favorite.desc" = "选择收藏地点并启动虚拟定位，同时拉起 7 秒刷新倒计时并跳转系统「定位服务」开关页清除缓存（同时输出 prefs: 链接）。";
+"intent.start_favorite.short" = "开始定位";
+"Locate ${place} and refresh cache" = "定位到 ${place} 并刷新缓存";
+
+"intent.stop.title" = "关闭虚拟定位";
+"intent.stop.desc" = "断开虚拟外设定位，拉起 7 秒恢复倒计时浮窗并直接跳转系统「定位服务」页清除残留缓存恢复真实 GPS。";
+"intent.stop.short" = "关闭定位";
+"Stop virtual location and refresh cache" = "关闭虚拟定位并刷新恢复";

@@ -4,7 +4,12 @@
 #import <objc/message.h>
 #import <stdatomic.h>
 #import <sys/socket.h>
+#import <time.h>
 #import <unistd.h>
+
+static inline double RLVirtualMonotonicNow(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+}
 
 @protocol RLACCTransportClient
 - (NSString *)createConnectionWithType:(int)type andIdentifier:(NSString *)identifier;
@@ -233,7 +238,7 @@ static BOOL HasSignature(id receiver, NSString *name, NSString *result, NSArray<
     if (!atomic_load(&_closed) && fd >= 0) {
         const uint8_t *bytes = data.bytes;
         NSUInteger offset = 0;
-        CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + 1.5;
+        double deadline = RLVirtualMonotonicNow() + 1.5;
         while (offset < data.length && !atomic_load(&_closed)) {
             ssize_t count = send(fd, bytes + offset, data.length - offset, 0);
             if (count > 0) {
@@ -242,7 +247,7 @@ static BOOL HasSignature(id receiver, NSString *name, NSString *result, NSArray<
             }
             if (count < 0 && errno == EINTR) continue;
             if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (CFAbsoluteTimeGetCurrent() < deadline) continue;
+                if (RLVirtualMonotonicNow() < deadline) continue;
             }
             failed = YES;
             break;

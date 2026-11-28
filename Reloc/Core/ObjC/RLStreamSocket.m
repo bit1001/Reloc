@@ -5,8 +5,12 @@
 #import <poll.h>
 #import <stdatomic.h>
 #import <sys/socket.h>
+#import <time.h>
 #import <unistd.h>
 
+static inline double RLMonotonicNow(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+}
 
 static NSError *RLSockError(RLErrorCode code, NSString *message) {
     return [NSError errorWithDomain:RLErrorDomain
@@ -20,14 +24,14 @@ static NSError *RLSockError(RLErrorCode code, NSString *message) {
     int _wakePipe[2];
     atomic_bool _closedFlag;
     atomic_bool _nudgedFlag;
-    CFAbsoluteTime _ioDeadline;
+    double _ioDeadline;
     NSMutableData *_readBuffer;
 }
 @end
 
-static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short events, CFAbsoluteTime deadline) {
+static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short events, double deadline) {
     while (1) {
-        CFAbsoluteTime remaining = deadline - CFAbsoluteTimeGetCurrent();
+        double remaining = deadline - RLMonotonicNow();
         if (remaining <= 0) {
             return 0; // timeout
         }
@@ -53,7 +57,7 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
             return -1;
         }
         if (rc == 0) {
-            if (CFAbsoluteTimeGetCurrent() >= deadline) return 0;
+            if (RLMonotonicNow() >= deadline) return 0;
             continue;
         }
         if (nfds == 2 && (fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
@@ -133,7 +137,7 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
     }
     if (data.length == 0) return YES;
 
-    _ioDeadline = CFAbsoluteTimeGetCurrent() + MAX(timeout, 0.1);
+    _ioDeadline = RLMonotonicNow() + MAX(timeout, 0.1);
     const uint8_t *bytes = data.bytes;
     size_t offset = 0;
     size_t total = data.length;
@@ -159,7 +163,7 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
             int ready = RLPollFD(fd, _wakePipe[0], &_closedFlag, POLLOUT, _ioDeadline);
             if (ready > 0) continue;
             if (ready == 0) {
-                if (CFAbsoluteTimeGetCurrent() < _ioDeadline) {
+                if (RLMonotonicNow() < _ioDeadline) {
                     continue;
                 }
                 if (error) *error = RLSockError(RLErrorSocketTimeout, @"Socket write timed out");
@@ -186,7 +190,11 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
 
     if (_readBuffer.length >= length) {
         NSData *slice = [_readBuffer subdataWithRange:NSMakeRange(0, length)];
-        [_readBuffer replaceBytesInRange:NSMakeRange(0, length) withBytes:NULL length:0];
+        if (_readBuffer.length == length) {
+            [_readBuffer setLength:0];
+        } else {
+            [_readBuffer replaceBytesInRange:NSMakeRange(0, length) withBytes:NULL length:0];
+        }
         return slice;
     }
 
@@ -195,7 +203,7 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
         return nil;
     }
 
-    _ioDeadline = CFAbsoluteTimeGetCurrent() + MAX(timeout, 0.001);
+    _ioDeadline = RLMonotonicNow() + MAX(timeout, 0.001);
     uint8_t scratch[4096];
 
     while (_readBuffer.length < length) {
@@ -225,7 +233,7 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
             int ready = RLPollFD(fd, _wakePipe[0], &_closedFlag, POLLIN, _ioDeadline);
             if (ready > 0) continue;
             if (ready == 0) {
-                if (CFAbsoluteTimeGetCurrent() >= _ioDeadline ||
+                if (RLMonotonicNow() >= _ioDeadline ||
                     (_readBuffer.length == 0 && atomic_exchange(&_nudgedFlag, false))) {
                     if (timedOut) *timedOut = YES;
                     return nil;
@@ -243,7 +251,11 @@ static int RLPollFD(int fd, int wakeFD, const atomic_bool *closedFlag, short eve
     }
 
     NSData *slice = [_readBuffer subdataWithRange:NSMakeRange(0, length)];
-    [_readBuffer replaceBytesInRange:NSMakeRange(0, length) withBytes:NULL length:0];
+    if (_readBuffer.length == length) {
+        [_readBuffer setLength:0];
+    } else {
+        [_readBuffer replaceBytesInRange:NSMakeRange(0, length) withBytes:NULL length:0];
+    }
     return slice;
 }
 

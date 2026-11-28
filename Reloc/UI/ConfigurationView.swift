@@ -1,12 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct ConfigurationView: View {
     @ObservedObject var viewModel: RelocViewModel
+    @Environment(\.openURL) private var openURL
+    @State private var copiedPrefsURL = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section(L10n.tr("settings.section.location")) {
+                Section {
                     Stepper(value: $viewModel.intervalSeconds, in: 1.0...10.0, step: 0.5) {
                         Label {
                             Text(L10n.format("settings.nmea_interval", viewModel.intervalSeconds))
@@ -22,6 +25,10 @@ struct ConfigurationView: View {
                         Text(L10n.format("settings.duration.seconds", 180)).tag(180.0)
                         Text(L10n.format("settings.duration.seconds", 600)).tag(600.0)
                         Text(L10n.format("settings.duration.seconds", 1800)).tag(1800.0)
+                        Text(L10n.format("settings.duration.hours", 1)).tag(3600.0)
+                        Text(L10n.format("settings.duration.hours", 2)).tag(7200.0)
+                        Text(L10n.format("settings.duration.hours", 4)).tag(14400.0)
+                        Text(L10n.format("settings.duration.hours", 8)).tag(28800.0)
                     } label: {
                         Label {
                             Text(L10n.tr("settings.duration"))
@@ -46,13 +53,120 @@ struct ConfigurationView: View {
                         }
                     }
 
-                    Toggle(isOn: $viewModel.backgroundKeepAliveEnabled) {
+                    HStack(spacing: 10) {
                         Label {
-                            Text(L10n.tr("settings.keep_alive"))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(L10n.tr("settings.background_mode.title"))
+                                Text(
+                                    viewModel.isAlwaysLocationAuthorized
+                                        ? L10n.tr("settings.background_mode.always")
+                                        : L10n.tr("settings.background_mode.upgrade_hint")
+                                )
+                                .font(.caption)
+                                .foregroundStyle(viewModel.isAlwaysLocationAuthorized ? .secondary : RelocTheme.amber)
+                            }
                         } icon: {
-                            SettingsIconBadge(systemName: "bolt.shield.fill", color: .teal)
+                            SettingsIconBadge(
+                                systemName: "bolt.shield.fill",
+                                color: viewModel.isAlwaysLocationAuthorized ? RelocTheme.emerald : RelocTheme.amber
+                            )
+                        }
+                        Spacer()
+                        if !viewModel.isAlwaysLocationAuthorized {
+                            Button(L10n.tr("settings.background_mode.action")) {
+                                viewModel.openAppSettings()
+                            }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(RelocTheme.accent)
                         }
                     }
+                } header: {
+                    Text(L10n.tr("settings.section.location"))
+                } footer: {
+                    Text(L10n.tr("settings.background_mode.footer"))
+                }
+
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L10n.tr("intent.start_favorite.title"))
+                                .font(.subheadline.weight(.semibold))
+                            Text(L10n.tr("settings.shortcuts.start_summary"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        SettingsIconBadge(systemName: "location.north.circle.fill", color: RelocTheme.accent)
+                    }
+
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L10n.tr("intent.stop.title"))
+                                .font(.subheadline.weight(.semibold))
+                            Text(L10n.tr("settings.shortcuts.stop_summary"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        SettingsIconBadge(systemName: "stop.circle.fill", color: RelocTheme.crimson)
+                    }
+
+                    Button {
+                        if let url = URL(string: "shortcuts://") {
+                            openURL(url)
+                        }
+                    } label: {
+                        HStack {
+                            Label {
+                                Text(L10n.tr("settings.shortcuts.open_app"))
+                                    .foregroundStyle(.primary)
+                            } icon: {
+                                SettingsIconBadge(systemName: "square.stack.3d.up.fill", color: .indigo)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Button {
+                        UIPasteboard.general.string = "prefs:root=Privacy&path=LOCATION"
+                        RelocTheme.hapticLight()
+                        copiedPrefsURL = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                            copiedPrefsURL = false
+                        }
+                    } label: {
+                        HStack {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(L10n.tr("settings.shortcuts.copy_prefs_title"))
+                                        .foregroundStyle(.primary)
+                                    Text("prefs:root=Privacy&path=LOCATION")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                SettingsIconBadge(systemName: "link", color: .gray)
+                            }
+                            Spacer()
+                            if copiedPrefsURL {
+                                Text(L10n.tr("settings.shortcuts.copied"))
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(RelocTheme.emerald)
+                            } else {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text(L10n.tr("settings.section.shortcuts"))
+                } footer: {
+                    Text(L10n.tr("settings.shortcuts.footer"))
                 }
 
                 Section {

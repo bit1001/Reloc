@@ -136,22 +136,19 @@ final class LocationRefreshPresenter: NSObject, ObservableObject {
         pixelBufferPool = nil
         isActive = false
         isPossible = false
-        if !BackgroundKeepAlive.hasActiveBackgroundSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        deactivateAudioSession()
     }
 
     // MARK: - Setup & Frame Rendering
 
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        // If BackgroundKeepAlive already activated `.playback`, avoid changing mode or re-activating
-        // on the main thread (which stalls mediaserverd and causes PiP launch stutter).
-        if session.category == .playback {
-            return
-        }
         try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? session.setActive(true)
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func ensureControllerAttached() {
@@ -202,12 +199,20 @@ final class LocationRefreshPresenter: NSObject, ObservableObject {
 
     private func enqueueCurrentFrame() {
         guard let displayLayer = hostView?.displayLayer else { return }
-        let renderer = displayLayer.sampleBufferRenderer
-        if renderer.status == .failed {
-            renderer.flush()
+        if #available(iOS 17.0, *) {
+            let renderer = displayLayer.sampleBufferRenderer
+            if renderer.status == .failed {
+                renderer.flush()
+            }
+            guard let buffer = renderSampleBuffer() else { return }
+            renderer.enqueue(buffer)
+        } else {
+            if displayLayer.status == .failed {
+                displayLayer.flush()
+            }
+            guard let buffer = renderSampleBuffer() else { return }
+            displayLayer.enqueue(buffer)
         }
-        guard let buffer = renderSampleBuffer() else { return }
-        renderer.enqueue(buffer)
     }
 
     private func ensurePixelBufferPool(width: Int, height: Int) -> CVPixelBufferPool? {
@@ -458,12 +463,16 @@ extension LocationRefreshPresenter: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor in
             self.isActive = false
+            self.wantsAutoStart = false
+            self.deactivateAudioSession()
         }
     }
 
     nonisolated func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
         Task { @MainActor in
             self.isActive = false
+            self.wantsAutoStart = false
+            self.deactivateAudioSession()
         }
     }
 }

@@ -106,10 +106,13 @@ public enum NMEAGenerator {
         let safeAltitude = location.altitude.isFinite ? min(50_000.0, max(-500.0, location.altitude)) : 10.0
         let altitudeStr = String(format: "%.1f", safeAltitude)
         let speedStr = String(format: "%.1f", max(0.0, location.speedKnots.isFinite ? location.speedKnots : 0.0))
-        let courseNorm = location.courseDegrees.isFinite
+        var courseNorm = location.courseDegrees.isFinite
             ? ((location.courseDegrees.truncatingRemainder(dividingBy: 360.0)) + 360.0)
                 .truncatingRemainder(dividingBy: 360.0)
             : 0.0
+        if courseNorm >= 359.95 {
+            courseNorm = 0.0
+        }
         let courseStr = String(format: "%.1f", courseNorm)
         let rmcMode = safeQuality == 2 ? "D" : "A"
 

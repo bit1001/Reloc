@@ -72,7 +72,9 @@ public final class LiveLocationBox: @unchecked Sendable {
     }
 }
 
-/// Runs iAP2 / MFi / NMEA through a software-only local accessory endpoint.
+/// Runs iAP2 / MFi / NMEA through a software-only local accessory endpoint, hardened for
+/// multi-hour continuous background operation (monotonic clocks, zero busy-wait polling,
+/// background micro-jitter, and endless capped exponential backoff for transient disruptions).
 public final class AccessoryLocationSession {
     public typealias EventCallback = @Sendable (ProtocolEvent) -> Void
     public typealias SnapshotCallback = @Sendable (SessionSnapshot) -> Void
@@ -80,51 +82,123 @@ public final class AccessoryLocationSession {
     public let id: UUID
     private let queue = DispatchQueue(label: "com.reloc.session", qos: .userInitiated)
     private let stateLock = NSLock()
+    private let sleepCondition = NSCondition()
     private var cancelled = false
+    private var wakeReconnectRequested = false
     private var runGeneration: UInt64 = 0
     private var activeLink: IAP2Link?
     private var activeSocket: RLStreamSocket?
     private var activeVirtualTransport: RLVirtualAccessoryTransport?
     private var coreLocationConfirmed = false
-    private var fastBurstUntil: CFAbsoluteTime = 0
+    private var microJitterEnabled = false
+    private var fastBurstUntil: TimeInterval = 0
     private var pendingKalmanReset = false
     private var burstMotionPacketsRemaining = 0
     private var pendingReconnectReason: String?
     private var fallbackRealLocation: TargetLocation?
 
     public let locationBox: LiveLocationBox
+    private let trajectoryDriver: TrajectoryDriver?
     private let onEvent: EventCallback
     private let onSnapshot: SnapshotCallback
+    private let onTrajectoryProgress: (@Sendable (TrajectoryProgress) -> Void)?
     private let onAuthenticated: (@Sendable () -> Void)?
     private let onLocationRequested: (@Sendable () -> Void)?
     private let onLocationStopped: (@Sendable () -> Void)?
     private let onSubscriptionRestarted: (@Sendable () -> Void)?
+    private let onReconnecting: (@Sendable () -> Void)?
 
     public init(
         id: UUID = UUID(),
         initialLocation: TargetLocation,
+        microJitterEnabled: Bool = false,
+        trajectoryDriver: TrajectoryDriver? = nil,
         onEvent: @escaping EventCallback,
         onSnapshot: @escaping SnapshotCallback,
+        onTrajectoryProgress: (@Sendable (TrajectoryProgress) -> Void)? = nil,
         onAuthenticated: (@Sendable () -> Void)? = nil,
         onLocationRequested: (@Sendable () -> Void)? = nil,
         onLocationStopped: (@Sendable () -> Void)? = nil,
-        onSubscriptionRestarted: (@Sendable () -> Void)? = nil
+        onSubscriptionRestarted: (@Sendable () -> Void)? = nil,
+        onReconnecting: (@Sendable () -> Void)? = nil
     ) {
         self.id = id
         self.locationBox = LiveLocationBox(initialLocation)
+        self.microJitterEnabled = microJitterEnabled
+        self.trajectoryDriver = trajectoryDriver
         self.onEvent = onEvent
         self.onSnapshot = onSnapshot
+        self.onTrajectoryProgress = onTrajectoryProgress
         self.onAuthenticated = onAuthenticated
         self.onLocationRequested = onLocationRequested
         self.onLocationStopped = onLocationStopped
         self.onSubscriptionRestarted = onSubscriptionRestarted
+        self.onReconnecting = onReconnecting
+    }
+
+    private static var monotonicNow: TimeInterval {
+        ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Returns the live expected target coordinate (moving trajectory point when simulating a route,
+    /// otherwise the static target coordinate) for accurate CoreLocation lock verification.
+    public func currentComparisonLocation() -> TargetLocation {
+        trajectoryDriver?.currentTargetLocation() ?? locationBox.get()
+    }
+
+    public func isTrajectoryWaitingForLock() -> Bool {
+        trajectoryDriver?.isWaitingForLock() ?? false
     }
 
     /// Updates whether iOS CoreLocation has confirmed `isProducedByAccessory == true` for the target.
     public func markCoreLocationConfirmed(_ confirmed: Bool) {
         stateLock.lock()
         coreLocationConfirmed = confirmed
+        let sock = activeSocket
         stateLock.unlock()
+        if confirmed {
+            if trajectoryDriver?.releaseStartLock() == true {
+                emitEvent("trajectory_lock_released")
+            }
+            sock?.nudge()
+        } else {
+            if trajectoryDriver?.holdForRelock() == true {
+                emitEvent("trajectory_held_for_relock")
+            }
+        }
+    }
+
+    public func setTrajectoryPaused(_ paused: Bool) {
+        trajectoryDriver?.setPaused(paused)
+        stateLock.lock()
+        let sock = activeSocket
+        stateLock.unlock()
+        sock?.nudge()
+    }
+
+    public func setTrajectorySpeed(_ mps: Double) {
+        trajectoryDriver?.setTargetSpeed(mps)
+    }
+
+    public func setTrajectoryPreset(_ preset: RouteTransportPreset) {
+        trajectoryDriver?.setPreset(preset)
+    }
+
+    public func setTrajectoryLoopMode(_ mode: RouteLoopMode) {
+        trajectoryDriver?.setLoopMode(mode)
+    }
+
+    public func setTrajectoryRealisticMotion(_ enabled: Bool) {
+        trajectoryDriver?.setRealisticMotionEnabled(enabled)
+    }
+
+    /// Toggles stationary sub-meter GPS micro-jitter directly on the session thread (no main-thread timer).
+    public func setMicroJitterEnabled(_ enabled: Bool) {
+        stateLock.lock()
+        microJitterEnabled = enabled
+        let sock = activeSocket
+        stateLock.unlock()
+        sock?.nudge()
     }
 
     /// Stores the most recent known internal real location so stop-time accuracy degradation
@@ -139,8 +213,10 @@ public final class AccessoryLocationSession {
     /// so `locationd` locks onto the external accessory GPS as rapidly as possible.
     public func triggerFastBurst(seconds: TimeInterval = 15.0) {
         stateLock.lock()
-        fastBurstUntil = max(fastBurstUntil, CFAbsoluteTimeGetCurrent() + seconds)
+        fastBurstUntil = max(fastBurstUntil, Self.monotonicNow + seconds)
+        let sock = activeSocket
         stateLock.unlock()
+        sock?.nudge()
     }
 
     /// Wakes the streaming loop immediately on coordinate change, optionally emitting a brief
@@ -152,7 +228,7 @@ public final class AccessoryLocationSession {
             pendingKalmanReset = true
             burstMotionPacketsRemaining = max(burstMotionPacketsRemaining, 2)
         }
-        fastBurstUntil = max(fastBurstUntil, CFAbsoluteTimeGetCurrent() + burstSeconds)
+        fastBurstUntil = max(fastBurstUntil, Self.monotonicNow + burstSeconds)
         let sock = activeSocket
         stateLock.unlock()
         sock?.nudge()
@@ -165,6 +241,19 @@ public final class AccessoryLocationSession {
         let sock = activeSocket
         stateLock.unlock()
         sock?.nudge()
+        wakeBackoffSleep()
+    }
+
+    /// Interrupts any exponential reconnect backoff immediately (e.g. when returning to foreground).
+    public func wakeForImmediateReconnect() {
+        wakeBackoffSleep()
+    }
+
+    private func wakeBackoffSleep() {
+        sleepCondition.lock()
+        wakeReconnectRequested = true
+        sleepCondition.broadcast()
+        sleepCondition.unlock()
     }
 
     private func consumeReconnectReason() -> String? {
@@ -175,12 +264,19 @@ public final class AccessoryLocationSession {
         return reason
     }
 
-    private func isFastBurstActive(now: CFAbsoluteTime) -> Bool {
+    private func isFastBurstActive(now: TimeInterval) -> Bool {
         stateLock.lock()
         let confirmed = coreLocationConfirmed
         let burstDeadline = fastBurstUntil
         stateLock.unlock()
         return !confirmed && now < burstDeadline
+    }
+
+    private func isConfirmedAndJitter() -> (confirmed: Bool, jitter: Bool) {
+        stateLock.lock()
+        let result = (coreLocationConfirmed, microJitterEnabled)
+        stateLock.unlock()
+        return result
     }
 
     /// Verifies a local virtual endpoint through a real iAP2 SYN exchange, without pairing.
@@ -206,8 +302,9 @@ public final class AccessoryLocationSession {
         resetCancellation()
         queue.async { [weak self] in
             guard let self else { return }
-            let deadline = configuration.durationSeconds > 0
-                ? CFAbsoluteTimeGetCurrent() + configuration.durationSeconds : nil
+            // Wall-clock deadline respects real elapsed time across device sleep / screen lock.
+            let wallDeadline = configuration.durationSeconds > 0
+                ? Date().addingTimeInterval(configuration.durationSeconds) : nil
             var finalSnapshot = SessionSnapshot()
             finalSnapshot.mode = configuration.mode
             finalSnapshot.isRunning = true
@@ -215,7 +312,7 @@ public final class AccessoryLocationSession {
             var shouldReconnect = true
             var consecutiveFailures = 0
             while shouldReconnect && !self.isCancelled() {
-                if let deadline, CFAbsoluteTimeGetCurrent() >= deadline { break }
+                if let wallDeadline, Date() >= wallDeadline { break }
                 var reconnectDelay: TimeInterval = 0.5
                 do {
                     let transport = try RLVirtualAccessoryTransport { [weak self] event, details in
@@ -234,7 +331,7 @@ public final class AccessoryLocationSession {
                     if cancelled { break }
                     let outcome = self.runOnSocket(
                         socket: transport.socket, configuration: configuration, mfiSigner: mfiSigner,
-                        initialSnapshot: finalSnapshot, overallDeadline: deadline, keepRunningOnExit: true
+                        initialSnapshot: finalSnapshot, overallWallDeadline: wallDeadline, keepRunningOnExit: true
                     )
                     switch outcome {
                     case .completed(let count):
@@ -246,7 +343,8 @@ public final class AccessoryLocationSession {
                     case .reconnectRequested(let reason, let count):
                         finalSnapshot.packetsAcknowledged = count
                         consecutiveFailures = 0
-                        reconnectDelay = 0.5
+                        reconnectDelay = 0.4
+                        self.onReconnecting?()
                         self.emitEvent("virtual_accessory_reconnecting", details: ["reason": reason])
                     case .recoverableError(let message, let didSendPackets, let count):
                         finalSnapshot.packetsAcknowledged = count
@@ -255,8 +353,9 @@ public final class AccessoryLocationSession {
                             reconnectDelay = 0.5
                         } else {
                             consecutiveFailures += 1
-                            reconnectDelay = min(5.0, 0.5 * pow(2.0, Double(min(consecutiveFailures - 1, 3))))
+                            reconnectDelay = min(30.0, 0.5 * pow(2.0, Double(min(consecutiveFailures - 1, 6))))
                         }
+                        self.onReconnecting?()
                         self.emitEvent("virtual_accessory_reconnecting", details: [
                             "reason": message,
                             "backoff_s": reconnectDelay,
@@ -265,20 +364,28 @@ public final class AccessoryLocationSession {
                 } catch {
                     let message = error.localizedDescription
                     let nsError = error as NSError
+                    // Only stop permanently for incompatible framework/ABI errors (code == 2).
+                    // Transient failures (e.g. accessoryd restart / screen-lock transition) keep retrying
+                    // with capped exponential backoff so multi-hour sessions self-heal automatically.
                     let isPermanent = nsError.domain == "dev.reloc.virtual-accessory" && nsError.code == 2
                     consecutiveFailures += 1
                     self.emitEvent("virtual_accessory_error", details: [
                         "detail": message,
                         "attempt": consecutiveFailures,
                     ], isError: true)
-                    if isPermanent || consecutiveFailures >= 6 {
+                    if isPermanent {
                         finalSnapshot.lastError = message
                         shouldReconnect = false
                     } else {
-                        reconnectDelay = min(4.0, 0.5 * pow(2.0, Double(consecutiveFailures - 1)))
+                        finalSnapshot.lastError = message
+                        self.onSnapshot(finalSnapshot)
+                        self.onReconnecting?()
+                        reconnectDelay = min(30.0, 0.5 * pow(2.0, Double(min(consecutiveFailures - 1, 6))))
                     }
                 }
-                if shouldReconnect { self.sleepCancellable(reconnectDelay, deadline: deadline) }
+                if shouldReconnect {
+                    self.sleepCancellable(reconnectDelay, wallDeadline: wallDeadline)
+                }
             }
             finalSnapshot.isRunning = false
             self.onSnapshot(finalSnapshot)
@@ -312,6 +419,7 @@ public final class AccessoryLocationSession {
         let sock = activeSocket
         stateLock.unlock()
 
+        wakeBackoffSleep()
         sock?.nudge()
 
         if !hasActiveLink {
@@ -350,6 +458,10 @@ public final class AccessoryLocationSession {
         pendingReconnectReason = nil
         runGeneration &+= 1
         stateLock.unlock()
+
+        sleepCondition.lock()
+        wakeReconnectRequested = false
+        sleepCondition.unlock()
     }
 
     private func isCancelled() -> Bool {
@@ -378,15 +490,21 @@ public final class AccessoryLocationSession {
         case fatalError(String)
     }
 
-    private func sleepCancellable(_ seconds: TimeInterval, deadline: CFAbsoluteTime?) {
-        let end = CFAbsoluteTimeGetCurrent() + seconds
-        while !isCancelled() {
-            let now = CFAbsoluteTimeGetCurrent()
-            if now >= end { return }
-            if let deadline, now >= deadline { return }
-            let slice = min(0.1, end - now)
-            Thread.sleep(forTimeInterval: max(0.01, slice))
+    /// Zero-CPU-wakeup condition wait for reconnect backoff; wakes immediately on cancel or resume.
+    private func sleepCancellable(_ seconds: TimeInterval, wallDeadline: Date?) {
+        let nowDate = Date()
+        var targetDate = nowDate.addingTimeInterval(max(0.01, seconds))
+        if let wallDeadline, wallDeadline < targetDate {
+            targetDate = wallDeadline
         }
+        sleepCondition.lock()
+        defer { sleepCondition.unlock() }
+        wakeReconnectRequested = false
+        while !isCancelled() && !wakeReconnectRequested {
+            if Date() >= targetDate { break }
+            _ = sleepCondition.wait(until: targetDate)
+        }
+        wakeReconnectRequested = false
     }
 
     private func runOnSocket(
@@ -394,7 +512,7 @@ public final class AccessoryLocationSession {
         configuration: SessionConfiguration,
         mfiSigner: RLMFiSigner,
         initialSnapshot: SessionSnapshot,
-        overallDeadline: CFAbsoluteTime? = nil,
+        overallWallDeadline: Date? = nil,
         keepRunningOnExit: Bool = false
     ) -> SocketRunOutcome {
         var snapshot = initialSnapshot
@@ -413,6 +531,8 @@ public final class AccessoryLocationSession {
         stateLock.lock()
         activeLink = link
         activeSocket = socket
+        pendingKalmanReset = false
+        burstMotionPacketsRemaining = 0
         stateLock.unlock()
 
         defer {
@@ -428,16 +548,16 @@ public final class AccessoryLocationSession {
             snapshot.linkReady = true
             onSnapshot(snapshot)
 
-            let startTime = CFAbsoluteTimeGetCurrent()
-            let authDeadline = startTime + 12.0
-            let deadline: CFAbsoluteTime? = overallDeadline ?? (
+            let startMonotonic = Self.monotonicNow
+            let authDeadline = startMonotonic + 12.0
+            let wallDeadline: Date? = overallWallDeadline ?? (
                 configuration.durationSeconds > 0
-                    ? startTime + configuration.durationSeconds
+                    ? Date().addingTimeInterval(configuration.durationSeconds)
                     : nil
             )
 
             var activeSentences = Set<UInt16>()
-            var lastSent: [UInt16: CFAbsoluteTime] = [:]
+            var lastSent: [UInt16: TimeInterval] = [:]
             var minIntervals: [UInt16: TimeInterval] = [:]
             var sawLocationStopped = false
 
@@ -458,19 +578,23 @@ public final class AccessoryLocationSession {
                     return .reconnectRequested(reconnectReason, packetCount: snapshot.packetsAcknowledged)
                 }
 
-                let now = CFAbsoluteTimeGetCurrent()
-                if let deadline, now >= deadline {
+                let now = Self.monotonicNow
+                if let wallDeadline, Date() >= wallDeadline {
                     break
                 }
                 if !snapshot.authenticated && now >= authDeadline {
                     throw IAP2LinkError.timeout("Accessory identification/authentication timed out")
                 }
 
-                var pollSlice: TimeInterval = 0.15
-                if configuration.mode == .send,
-                   snapshot.identified,
-                   snapshot.authenticated,
-                   !activeSentences.isEmpty {
+                // Event-driven poll slice: sleep cleanly until the next NMEA frame is actually due.
+                // Incoming iAP2 frames, coordinate updates, reconnect requests, and stop() all wake
+                // `poll()` in < 1 ms via the socket or wake pipe.
+                var pollSlice: TimeInterval
+                if !snapshot.authenticated {
+                    pollSlice = min(0.5, max(0.01, authDeadline - now))
+                } else if configuration.mode == .send,
+                          snapshot.identified,
+                          !activeSentences.isEmpty {
                     let burstActive = isFastBurstActive(now: now)
                     stateLock.lock()
                     let hasKalmanReset = pendingKalmanReset
@@ -478,16 +602,23 @@ public final class AccessoryLocationSession {
                     if hasKalmanReset {
                         pollSlice = 0.01
                     } else {
-                        let nextDue = activeSentences.map { id -> CFAbsoluteTime in
+                        let effectiveInterval = trajectoryDriver != nil
+                            ? min(configuration.intervalSeconds, 1.0)
+                            : configuration.intervalSeconds
+                        let nextDue = activeSentences.map { id -> TimeInterval in
                             let last = lastSent[id] ?? -.infinity
-                            let required = burstActive ? 0.2 : max(configuration.intervalSeconds, minIntervals[id] ?? 0.25)
+                            let minReq = minIntervals[id] ?? 0.25
+                            let required = burstActive ? max(0.25, minReq) : max(effectiveInterval, minReq)
                             return last.isFinite ? (last + required) : now
-                        }.min() ?? (now + 0.15)
-                        pollSlice = min(pollSlice, max(0.01, nextDue - now))
+                        }.min() ?? (now + 1.0)
+                        pollSlice = min(2.0, max(0.01, nextDue - now))
                     }
+                } else {
+                    pollSlice = 1.0
                 }
-                if let deadline {
-                    pollSlice = min(pollSlice, max(0.01, deadline - now))
+                if let wallDeadline {
+                    let wallRemaining = wallDeadline.timeIntervalSinceNow
+                    pollSlice = min(pollSlice, max(0.01, wallRemaining))
                 }
 
                 if let message = try link.receive(timeout: pollSlice) {
@@ -552,6 +683,10 @@ public final class AccessoryLocationSession {
                             minIntervalsMsLog["\(sid)"] = Int(ms)
                         }
                         lastSent.removeAll()
+                        stateLock.lock()
+                        pendingKalmanReset = false
+                        burstMotionPacketsRemaining = 0
+                        stateLock.unlock()
                         triggerFastBurst(seconds: 15.0)
                         snapshot.activeSentences = activeSentences.sorted()
                         onSnapshot(snapshot)
@@ -599,15 +734,40 @@ public final class AccessoryLocationSession {
                         }
                     }
 
-                    let tickNow = CFAbsoluteTimeGetCurrent()
-                    var target = locationBox.get()
+                    let tickNow = Self.monotonicNow
                     let burstActive = isFastBurstActive(now: tickNow)
+                    let effectiveInterval = trajectoryDriver != nil
+                        ? min(configuration.intervalSeconds, 1.0)
+                        : configuration.intervalSeconds
                     let due = activeSentences.sorted().filter { id in
                         let last = lastSent[id] ?? -.infinity
-                        let required = burstActive ? 0.2 : max(configuration.intervalSeconds, minIntervals[id] ?? 0.25)
+                        let minReq = minIntervals[id] ?? 0.25
+                        let required = burstActive ? max(0.25, minReq) : max(effectiveInterval, minReq)
                         return tickNow - last >= required
                     }
                     if !due.isEmpty {
+                        let (confirmed, jitter) = isConfirmedAndJitter()
+                        var target: TargetLocation
+                        if let driver = trajectoryDriver {
+                            let step = driver.advance(toMonotonicTime: tickNow, stationaryJitter: jitter)
+                            target = step.location
+                            locationBox.set(target)
+                            if step.didTeleportLap {
+                                let voidMap = NMEAGenerator.voidLocationSentences()
+                                let voidOutgoing = activeSentences.sorted().compactMap { voidMap[$0] }
+                                if !voidOutgoing.isEmpty, let voidMsg = try? NMEAGenerator.locationMessage(sentences: voidOutgoing) {
+                                    link.sendBestEffort(voidMsg, timeout: 0.2)
+                                    Thread.sleep(forTimeInterval: 0.04)
+                                }
+                            }
+                            onTrajectoryProgress?(step.progress)
+                        } else {
+                            target = locationBox.get()
+                            if jitter {
+                                target = CoordinateTransform.applyMicroJitter(to: target)
+                            }
+                        }
+
                         stateLock.lock()
                         if burstMotionPacketsRemaining > 0 {
                             burstMotionPacketsRemaining -= 1
@@ -625,11 +785,19 @@ public final class AccessoryLocationSession {
                         for id in due {
                             lastSent[id] = tickNow
                         }
+                        let hadError = snapshot.lastError != nil
                         snapshot.packetsAcknowledged += 1
                         snapshot.lastError = nil
-                        onSnapshot(snapshot)
 
-                        if snapshot.packetsAcknowledged == 1 || snapshot.packetsAcknowledged % 10 == 0 {
+                        // During acquisition (unconfirmed), push every ACK to update the live status pill.
+                        // Once confirmed in steady state, throttle pure counter updates to reduce main-thread wakeups.
+                        if !confirmed || hadError || snapshot.packetsAcknowledged == 1 || snapshot.packetsAcknowledged % 15 == 0 {
+                            onSnapshot(snapshot)
+                        }
+
+                        if snapshot.packetsAcknowledged == 1
+                            || snapshot.packetsAcknowledged == 10
+                            || snapshot.packetsAcknowledged % 60 == 0 {
                             emitEvent("location_link_acknowledged", details: [
                                 "count": snapshot.packetsAcknowledged,
                                 "lat": String(format: "%.6f", target.latitude),
